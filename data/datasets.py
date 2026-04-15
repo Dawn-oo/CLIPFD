@@ -1,203 +1,290 @@
-import cv2
-import numpy as np
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
-import torchvision.transforms.functional as TF
-from torch.utils.data import Dataset
-from random import random, choice, shuffle
-from io import BytesIO
-from PIL import Image
-from PIL import ImageFile
-from scipy.ndimage.filters import gaussian_filter
-import pickle
-import os 
-from skimage.io import imread
-from copy import deepcopy
+import json
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image, ImageFile
+
+from utils.enchance import TrainImageTransform, EvalImageTransform
+
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-
-MEAN = {
-    "imagenet":[0.485, 0.456, 0.406],
-    "orign_CLIP_model":[0.48145466, 0.4578275, 0.40821073]
-}
-
-STD = {
-    "imagenet":[0.229, 0.224, 0.225],
-    "orign_CLIP_model":[0.26862954, 0.26130258, 0.27577711]
-}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
+def recursively_read_images(
+    rootdir: Union[str, Path],
+    exts: Optional[Sequence[str]] = None,
+) -> List[Path]:
+    """
+    递归读取目录下所有图片
+    """
+    rootdir = Path(rootdir)
+    if not rootdir.exists():
+        raise FileNotFoundError(f"image root does not exist: {rootdir}")
+
+    if exts is None:
+        exts = IMAGE_EXTENSIONS
+    exts = {e.lower() for e in exts}
+
+    image_paths = []
+    for p in rootdir.rglob("*"):
+        if p.is_file() and p.suffix.lower() in exts:
+            image_paths.append(p)
+
+    return sorted(image_paths)
 
 
-def recursively_read(rootdir, must_contain, exts=["png", "jpg", "JPEG", "jpeg"]):
-    out = [] 
-    for r, d, f in os.walk(rootdir):
-        for file in f:
-            if (file.split('.')[1] in exts)  and  (must_contain in os.path.join(r, file)):
-                out.append(os.path.join(r, file))
-    return out
+def load_label_index(label_json_path: Union[str, Path]) -> Dict[str, Dict[str, int]]:
+    """
+    读取固定格式的标签 json，并转成：
+    {
+        "000001": {"binary_label": 1, "multi_label": 2},
+        ...
+    }
+    """
+    label_json_path = Path(label_json_path)
+    if not label_json_path.exists():
+        raise FileNotFoundError(f"label json not found: {label_json_path}")
+
+    with open(label_json_path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if not isinstance(raw, list):
+        raise ValueError("label json must be a list of dicts")
+
+    label_index = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each label item must be a dict")
+
+        for key in ["id", "是否有ai介入", "具体类别"]:
+            if key not in item:
+                raise KeyError(f"missing key '{key}' in label json item: {item}")
+
+        sample_id = str(item["id"]).strip()
+        binary_label = int(item["是否有ai介入"])
+        multi_label = int(item["具体类别"])
+
+        if binary_label not in (0, 1):
+            raise ValueError(f"binary label must be 0/1, got {binary_label}")
+        if multi_label not in (0, 1, 2):
+            raise ValueError(f"multi label must be 0/1/2, got {multi_label}")
+
+        label_index[sample_id] = {
+            "binary_label": binary_label,
+            "multi_label": multi_label,
+        }
+
+    return label_index
 
 
-def get_list(path, must_contain=''):
-    if ".pickle" in path:
-        with open(path, 'rb') as f:
-            image_list = pickle.load(f)
-        image_list = [ item for item in image_list if must_contain in item   ]
-    else:
-        image_list = recursively_read(path, must_contain)
-    return image_list
+class TrainImageJsonDataset(Dataset):
+    """
+    训练集：
+    - 必须有标签
+    - 使用训练增强
+    """
 
+    def __init__(
+        self,
+        image_root: Union[str, Path],
+        label_json_path: Union[str, Path],
+        transform=None,
+    ):
+        self.image_root = Path(image_root)
+        self.image_paths = recursively_read_images(self.image_root)
+        if len(self.image_paths) == 0:
+            raise RuntimeError(f"no images found in {self.image_root}")
 
+        self.label_index = load_label_index(label_json_path)
+        self.transform = transform if transform is not None else TrainImageTransform()
+        self.samples = self._build_samples()
 
+    def _build_samples(self) -> List[Dict]:
+        samples = []
 
-class RealFakeDataset(Dataset):
-    def __init__(self, opt):
-        assert opt.data_label in ["train", "val"]
-        #assert opt.data_mode in ["ours", "wang2020", "ours_wang2020"]
-        self.data_label  = opt.data_label
-        if opt.data_mode == 'ours':
-            pickle_name = "train.pickle" if opt.data_label=="train" else "val.pickle"
-            real_list = get_list( os.path.join(opt.real_list_path, pickle_name) )
-            fake_list = get_list( os.path.join(opt.fake_list_path, pickle_name) )
-        elif opt.data_mode == 'wang2020':
-            temp = 'train/progan' if opt.data_label == 'train' else 'test/progan'
-            real_list = get_list( os.path.join(opt.wang2020_data_path,temp), must_contain='0_real' )
-            fake_list = get_list( os.path.join(opt.wang2020_data_path,temp), must_contain='1_fake' )
-        elif opt.data_mode == 'ours_wang2020':
-            pickle_name = "train.pickle" if opt.data_label=="train" else "val.pickle"
-            real_list = get_list( os.path.join(opt.real_list_path, pickle_name) )
-            fake_list = get_list( os.path.join(opt.fake_list_path, pickle_name) )
-            temp = 'train/progan' if opt.data_label == 'train' else 'test/progan'
-            real_list += get_list( os.path.join(opt.wang2020_data_path,temp), must_contain='0_real' )
-            fake_list += get_list( os.path.join(opt.wang2020_data_path,temp), must_contain='1_fake' )
+        for img_path in self.image_paths:
+            sample_id = img_path.stem  # 例如 000001.jpg -> 000001
 
+            if sample_id not in self.label_index:
+                raise KeyError(f"image id '{sample_id}' not found in label json")
 
+            label_info = self.label_index[sample_id]
 
-        # setting the labels for the dataset
-        self.labels_dict = {}
-        for i in real_list:
-            self.labels_dict[i] = 0
-        for i in fake_list:
-            self.labels_dict[i] = 1
+            samples.append(
+                {
+                    "sample_id": sample_id,
+                    "image_path": str(img_path),
+                    "binary_label": label_info["binary_label"],
+                    "multi_label": label_info["multi_label"],
+                }
+            )
 
-        self.total_list = real_list + fake_list
-        shuffle(self.total_list)
-        if opt.isTrain:
-            crop_func = transforms.RandomCrop(opt.cropSize)
-        elif opt.no_crop:
-            crop_func = transforms.Lambda(lambda img: img)
-        else:
-            crop_func = transforms.CenterCrop(opt.cropSize)
+        return samples
 
-        if opt.isTrain and not opt.no_flip:
-            flip_func = transforms.RandomHorizontalFlip()
-        else:
-            flip_func = transforms.Lambda(lambda img: img)
-        if not opt.isTrain and opt.no_resize:
-            rz_func = transforms.Lambda(lambda img: img)
-        else:
-            rz_func = transforms.Lambda(lambda img: custom_resize(img, opt))
-        
+    def __len__(self) -> int:
+        return len(self.samples)
 
-        stat_from = "imagenet" if opt.arch.lower().startswith("imagenet") else "orign_CLIP_model"
-
-        print("mean and std stats are from: ", stat_from)
-        if '2b' not in opt.arch:
-            print ("using Official CLIP's normalization")
-            self.transform = transforms.Compose([
-                rz_func,
-                transforms.Lambda(lambda img: data_augment(img, opt)),
-                crop_func,
-                flip_func,
-                transforms.ToTensor(),
-                transforms.Normalize( mean=MEAN[stat_from], std=STD[stat_from] ),
-            ])
-        else:
-            print ("Using CLIP 2B transform")
-            self.transform = None # will be initialized in trainer.py
-
-
-    def __len__(self):
-        return len(self.total_list)
-
-
-    def __getitem__(self, idx):
-        img_path = self.total_list[idx]
-        label = self.labels_dict[img_path]
-        img = Image.open(img_path).convert("RGB")
+    def __getitem__(self, index: int) -> Dict:
+        item = self.samples[index]
+        img = Image.open(item["image_path"]).convert("RGB")
         img = self.transform(img)
-        return img, label
+
+        return {
+            "image": img,
+            "binary_label": torch.tensor(item["binary_label"], dtype=torch.float32),
+            "multi_label": torch.tensor(item["multi_label"], dtype=torch.long),
+            "sample_id": item["sample_id"],
+            "image_path": item["image_path"],
+        }
 
 
-def data_augment(img, opt):
-    img = np.array(img)
-    if img.ndim == 2:
-        img = np.expand_dims(img, axis=2)
-        img = np.repeat(img, 3, axis=2)
+class TestImageJsonDataset(Dataset):
+    """
+    验证 / 测试集：
+    - 可带标签，也可不带标签
+    - 使用测试预处理，不做训练增强
+    """
 
-    if random() < opt.blur_prob:
-        sig = sample_continuous(opt.blur_sig)
-        gaussian_blur(img, sig)
+    def __init__(
+        self,
+        image_root: Union[str, Path],
+        label_json_path: Optional[Union[str, Path]] = None,
+        transform=None,
+    ):
+        self.image_root = Path(image_root)
+        self.image_paths = recursively_read_images(self.image_root)
+        if len(self.image_paths) == 0:
+            raise RuntimeError(f"no images found in {self.image_root}")
 
-    if random() < opt.jpg_prob:
-        method = sample_discrete(opt.jpg_method)
-        qual = sample_discrete(opt.jpg_qual)
-        img = jpeg_from_key(img, qual, method)
+        self.label_index = load_label_index(label_json_path) if label_json_path is not None else None
+        self.transform = transform if transform is not None else EvalImageTransform()
+        self.samples = self._build_samples()
 
-    return Image.fromarray(img)
+    def _build_samples(self) -> List[Dict]:
+        samples = []
 
+        for img_path in self.image_paths:
+            sample_id = img_path.stem
+            item = {
+                "sample_id": sample_id,
+                "image_path": str(img_path),
+            }
 
-def sample_continuous(s):
-    if len(s) == 1:
-        return s[0]
-    if len(s) == 2:
-        rg = s[1] - s[0]
-        return random() * rg + s[0]
-    raise ValueError("Length of iterable s should be 1 or 2.")
+            if self.label_index is not None:
+                if sample_id not in self.label_index:
+                    raise KeyError(f"image id '{sample_id}' not found in label json")
 
+                label_info = self.label_index[sample_id]
+                item["binary_label"] = label_info["binary_label"]
+                item["multi_label"] = label_info["multi_label"]
 
-def sample_discrete(s):
-    if len(s) == 1:
-        return s[0]
-    return choice(s)
+            samples.append(item)
 
+        return samples
 
-def gaussian_blur(img, sigma):
-    gaussian_filter(img[:,:,0], output=img[:,:,0], sigma=sigma)
-    gaussian_filter(img[:,:,1], output=img[:,:,1], sigma=sigma)
-    gaussian_filter(img[:,:,2], output=img[:,:,2], sigma=sigma)
+    def __len__(self) -> int:
+        return len(self.samples)
 
+    def __getitem__(self, index: int) -> Dict:
+        item = self.samples[index]
+        img = Image.open(item["image_path"]).convert("RGB")
+        img = self.transform(img)
 
-def cv2_jpg(img, compress_val):
-    img_cv2 = img[:,:,::-1]
-    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), compress_val]
-    result, encimg = cv2.imencode('.jpg', img_cv2, encode_param)
-    decimg = cv2.imdecode(encimg, 1)
-    return decimg[:,:,::-1]
+        output = {
+            "image": img,
+            "sample_id": item["sample_id"],
+            "image_path": item["image_path"],
+        }
 
+        if "binary_label" in item:
+            output["binary_label"] = torch.tensor(item["binary_label"], dtype=torch.float32)
+        if "multi_label" in item:
+            output["multi_label"] = torch.tensor(item["multi_label"], dtype=torch.long)
 
-def pil_jpg(img, compress_val):
-    out = BytesIO()
-    img = Image.fromarray(img)
-    img.save(out, format='jpeg', quality=compress_val)
-    img = Image.open(out)
-    # load from memory before ByteIO closes
-    img = np.array(img)
-    out.close()
-    return img
-
-
-jpeg_dict = {'cv2': cv2_jpg, 'pil': pil_jpg}
-def jpeg_from_key(img, compress_val, key):
-    method = jpeg_dict[key]
-    return method(img, compress_val)
+        return output
 
 
-rz_dict = {'bilinear': Image.BILINEAR,
-           'bicubic': Image.BICUBIC,
-           'lanczos': Image.LANCZOS,
-           'nearest': Image.NEAREST}
-def custom_resize(img, opt):
-    interp = sample_discrete(opt.rz_interp)
-    return TF.resize(img, opt.loadSize, interpolation=rz_dict[interp])
+def build_train_loader(
+    image_root: Union[str, Path],
+    label_json_path: Union[str, Path],
+    batch_size: int,
+    image_size: int = 224,
+    load_size: int = 256,
+    num_workers: int = 4,
+    pin_memory: bool = True,
+    persistent_workers: bool = True,
+    no_crop: bool = False,
+    no_flip: bool = False,
+    blur_prob: float = 0.0,
+    blur_radius: Tuple[float, float] = (0.1, 1.5),
+    jpg_prob: float = 0.0,
+    jpg_quality: Tuple[int, int] = (65, 95),
+):
+    transform = TrainImageTransform(
+        image_size=image_size,
+        load_size=load_size,
+        no_crop=no_crop,
+        no_flip=no_flip,
+        blur_prob=blur_prob,
+        blur_radius=blur_radius,
+        jpg_prob=jpg_prob,
+        jpg_quality=jpg_quality,
+    )
+
+    dataset = TrainImageJsonDataset(
+        image_root=image_root,
+        label_json_path=label_json_path,
+        transform=transform,
+    )
+
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(persistent_workers and num_workers > 0),
+    )
+
+    return dataset, loader
+
+
+def build_test_loader(
+    image_root: Union[str, Path],
+    batch_size: int,
+    label_json_path: Optional[Union[str, Path]] = None,
+    image_size: int = 224,
+    load_size: int = 256,
+    num_workers: int = 4,
+    pin_memory: bool = True,
+    persistent_workers: bool = True,
+    no_crop: bool = False,
+):
+    transform = EvalImageTransform(
+        image_size=image_size,
+        load_size=load_size,
+        no_crop=no_crop,
+    )
+
+    dataset = TestImageJsonDataset(
+        image_root=image_root,
+        label_json_path=label_json_path,
+        transform=transform,
+    )
+
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(persistent_workers and num_workers > 0),
+    )
+
+    return dataset, loader

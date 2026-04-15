@@ -92,11 +92,11 @@ class LocalPatchBranch(nn.Module):
         out_dim=768,
         num_blocks=2,
         grid_size=None,
-        input_size=(224, 224),
+        # input_size=(224, 224),
         proj_dropout=0.1,
         block_dropout=0.0,
         gn_groups=8,
-        eps=1e-6,
+        # eps=1e-6,
     ):
         super().__init__()
 
@@ -104,8 +104,8 @@ class LocalPatchBranch(nn.Module):
             raise ValueError("in_dim, hidden_dim and out_dim must be positive")
         if num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
-        if len(input_size) != 2 or input_size[0] <= 0 or input_size[1] <= 0:
-            raise ValueError(f"invalid input_size: {input_size}")
+        # if len(input_size) != 2 or input_size[0] <= 0 or input_size[1] <= 0:
+        #     raise ValueError(f"invalid input_size: {input_size}")
 
         if grid_size is not None:
             if len(grid_size) != 2 or grid_size[0] <= 0 or grid_size[1] <= 0:
@@ -115,8 +115,8 @@ class LocalPatchBranch(nn.Module):
         self.hidden_dim = hidden_dim
         self.out_dim = out_dim
         self.grid_size = grid_size
-        self.input_size = input_size
-        self.eps = eps
+        # self.input_size = input_size
+        # self.eps = eps
 
         gn_proj = ConvGNAct._safe_groups(hidden_dim, gn_groups)
 
@@ -141,7 +141,7 @@ class LocalPatchBranch(nn.Module):
         )
 
         # 生成 网格热图
-        self.mask_head = nn.Conv2d(hidden_dim, 1, kernel_size=1, stride=1, padding=0)
+        # self.mask_head = nn.Conv2d(hidden_dim, 1, kernel_size=1, stride=1, padding=0)
 
         # 局部向量投影到 768 维
         self.feature_proj = nn.Sequential(
@@ -178,7 +178,7 @@ class LocalPatchBranch(nn.Module):
         return feat_map
 
     # 利用热图权重，对局部特征图做加权平均池化，得到一个局部向量
-    def _weighted_pool(self, feat_map, mask_logits):
+    # def _weighted_pool(self, feat_map, mask_logits):
         """
         feat_map: [B, C, H, W]
         mask_logits: [B, 1, H, W]
@@ -193,7 +193,7 @@ class LocalPatchBranch(nn.Module):
         return local_feat, mask_prob
 
     # 网格热图上采样到原图
-    def _upsample_heatmap(self, heatmap):
+    # def _upsample_heatmap(self, heatmap):
         """
         heatmap: [B, 1, h, w]
         return:  [B, 1, H_in, W_in]
@@ -208,25 +208,37 @@ class LocalPatchBranch(nn.Module):
     # 前向完整过程
     def forward(self, patch_tokens):
         # [B, N, C] -> [B, C, H, W]
+        # feat_map = self._tokens_to_map(patch_tokens)
+        #
+        # # 局部建模
+        # x = self.proj(feat_map)
+        # x = self.local_blocks(x)
+        #
+        # # # patch 网格热图（内部使用）
+        # mask_logits = self.mask_head(x)
+        #
+        # 局部向量
+        # local_feat_raw, mask_prob = self._weighted_pool(x, mask_logits)
+        # local_feat = self.feature_proj(local_feat_raw)           # [B, 768]
+
+        # 映射回输入图大小后的热图
+        # local_heatmap = self._upsample_heatmap(mask_prob)
+        # return {
+        #     "local_feat": local_feat,
+        #     "local_heatmap": local_heatmap,
+        # }
+
         feat_map = self._tokens_to_map(patch_tokens)
 
-        # 局部建模
         x = self.proj(feat_map)
         x = self.local_blocks(x)
 
-        # patch 网格热图（内部使用）
-        mask_logits = self.mask_head(x)
-
-        # 局部向量
-        local_feat_raw, mask_prob = self._weighted_pool(x, mask_logits)
-        local_feat = self.feature_proj(local_feat_raw)           # [B, 768]
-
-        # 映射回输入图大小后的热图
-        local_heatmap = self._upsample_heatmap(mask_prob)        # [B, 1, H_in, W_in]
+        # 直接平均池化，不再使用热图
+        local_feat_raw = x.mean(dim=(2, 3))  # [B, hidden_dim]
+        local_feat = self.feature_proj(local_feat_raw)
 
         return {
             "local_feat": local_feat,
-            "local_heatmap": local_heatmap,
         }
 
 

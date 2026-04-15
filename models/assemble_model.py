@@ -114,10 +114,10 @@ class CLIPFDModel(nn.Module):
         # 训练时可选返回辅助头
         if return_aux and self.use_global_aux_head:
             outputs["global_logits"] = self.global_head(global_feat)["logits"]
-
-        # 可视化时可选返回热图
-        if return_heatmap:
-            outputs["local_heatmap"] = local_heatmap
+        #
+        # # 可视化时可选返回热图
+        # if return_heatmap:
+        #     outputs["local_heatmap"] = local_heatmap
 
         # 调试/分析时可选返回中间特征
         if return_features:

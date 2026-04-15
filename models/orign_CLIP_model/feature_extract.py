@@ -1,11 +1,9 @@
-from .orign_CLIP_model import clip
+from models.orign_CLIP_model import clip
 import torch.nn as nn
 
-
-
-# 由于是直接使用的clip源码，但是只用到了图像编码器部分，因此重构一下该部分即可；
+# 主要作用为提取局部patch向量和局部的网格对应以及全局表征
 class CLIPModel(nn.Module):
-    def __init__(self, name="ViT-L/14", freeze=False,device="cpu"):
+    def __init__(self, name="ViT-L/14", freeze=True, device="cpu"):
         super().__init__()
 
         self.backbone, self.preprocess = clip.load(name, device=device)
@@ -27,10 +25,18 @@ class CLIPModel(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad = True
 
+    def extract_feat_and_tokens(self, x):
+        return self.backbone.encode_image_with_tokens(x)
+
     def forward(self, x):
-        global_feat = self.extract_global_feat(x)
+        global_feat, cls_token, patch_tokens ,(gh, gw)= self.extract_feat_and_tokens(x)
+
         return {
-            "global_feat": global_feat
+            "global_feat": global_feat,  # [B, 768]
+            "cls_token": cls_token,  # [B, 1024]
+            "patch_tokens": patch_tokens, # [B, N, 1024] N为 patch token 的数量
+            "(gh, gw)":(gh, gw)
         }
+
 
 

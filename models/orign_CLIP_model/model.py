@@ -258,32 +258,82 @@ class VisionTransformer(nn.Module):
     # 新增
     def forward_with_tokens(self, x):
         x = self.conv1(x)  # [B, C, H', W']
+        gh, gw = x.shape[-2], x.shape[-1]
         x = x.reshape(x.shape[0], x.shape[1], -1)
         x = x.permute(0, 2, 1)  # [B, N, D]
 
         cls_token = self.class_embedding.to(x.dtype)
-        cls_token = cls_token + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device)
+        cls_token = cls_token + torch.zeros(
+            x.shape[0], 1, x.shape[-1],
+            dtype=x.dtype, device=x.device
+        )
         x = torch.cat([cls_token, x], dim=1)  # [B, 1+N, D]
 
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # [1+N, B, D]
-        x = self.transformer(x)
+        out, x = self.transformer(x)
         x = x.permute(1, 0, 2)  # [B, 1+N, D]
 
-        # 对所有 token 做 ln_post，更方便后续统一取
+        # 对所有 token 做 ln_post
         x = self.ln_post(x)
 
-        cls_token = x[:, 0, :]  # [B, 1024]
-        patch_tokens = x[:, 1:, :]  # [B, 256, 1024]  (224输入时)
+        cls_token = x[:, 0, :]  # [B, width]
+        patch_tokens = x[:, 1:, :]  # [B, N, width]
 
         if self.proj is not None:
-            global_feat = cls_token @ self.proj  # [B, 768]
+            global_feat = cls_token @ self.proj  # [B, output_dim]
         else:
             global_feat = cls_token
 
-        return global_feat, cls_token, patch_tokens
+        return global_feat, cls_token, patch_tokens,(gh, gw)
+
+
+    # def forward_with_tokens(self, x, layer_idx=-1, apply_ln=False):
+    #     x = self.conv1(x)  # [B, C, H', W']
+    #     gh, gw = x.shape[-2], x.shape[-1]
+    #
+    #     x = x.reshape(x.shape[0], x.shape[1], -1)
+    #     x = x.permute(0, 2, 1)  # [B, N, D]
+    #
+    #     cls_token = self.class_embedding.to(x.dtype)
+    #     cls_token = cls_token + torch.zeros(
+    #         x.shape[0], 1, x.shape[-1],
+    #         dtype=x.dtype, device=x.device
+    #     )
+    #     x = torch.cat([cls_token, x], dim=1)  # [B, 1+N, D]
+    #     x = x + self.positional_embedding.to(x.dtype)
+    #     x = self.ln_pre(x)
+    #
+    #     x = x.permute(1, 0, 2)  # [1+N, B, D]
+    #     out, x_final = self.transformer(x, return_hidden_states=True)
+    #
+    #     hidden_states = out["hidden_states"]  # list of [1+N, B, D]
+    #     x = hidden_states[layer_idx]  # [1+N, B, D]
+    #     x = x.permute(1, 0, 2)  # [B, 1+N, D]
+    #
+    #     if apply_ln:
+    #         x = self.ln_post(x)
+    #
+    #     cls_token = x[:, 0, :]  # [B, D]
+    #     patch_tokens = x[:, 1:, :]  # [B, N, D]
+    #
+    #     global_feat = None
+    #     if layer_idx == -1:
+    #         cls_for_global = self.ln_post(hidden_states[-1].permute(1, 0, 2)[:, 0, :])
+    #         if self.proj is not None:
+    #             global_feat = cls_for_global @ self.proj
+    #         else:
+    #             global_feat = cls_for_global
+    #
+    #     return {
+    #         "global_feat": global_feat,
+    #         "global_token": cls_token,
+    #         "local_feat": patch_tokens,
+    #         "grid_size": (gh, gw),
+    #         "layer_idx": layer_idx
+    #     }
 
 class CLIP(nn.Module):
     def __init__(self,
@@ -416,6 +466,8 @@ class CLIP(nn.Module):
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
+    def encode_image_with_tokens(self, image):
+        return self.visual.forward_with_tokens(image.type(self.dtype))
 
 def convert_weights(model: nn.Module):
     """Convert applicable model parameters to fp16"""
@@ -479,3 +531,4 @@ def build_model(state_dict: dict):
     convert_weights(model)
     model.load_state_dict(state_dict)
     return model.eval()
+

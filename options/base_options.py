@@ -35,7 +35,7 @@ class BaseOptions:
         parser.add_argument("--no_flip", action="store_true", help="disable random flip in train")
 
         # ===== model =====
-        parser.add_argument("--backbone_name", type=str, default="ViT-L/14", help="CLIP backbone name")
+        parser.add_argument("--backbone_name", type=str, default='../models/parameters/ViT-L-14.pt', help="CLIP backbone name")
         parser.add_argument("--freeze_backbone", action="store_true", help="freeze CLIP backbone")
         parser.add_argument("--use_global_aux_head", action="store_true", help="enable global auxiliary binary head")
 

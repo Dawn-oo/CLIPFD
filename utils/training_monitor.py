@@ -2,164 +2,139 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import (
+    auc,
+    confusion_matrix,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
+)
+from sklearn.preprocessing import label_binarize
 
 
-class TrainingMonitor:
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _to_float(value):
+    if value is None:
+        return None
+    if hasattr(value, "item"):
+        value = value.item()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class TrainingVisualizer:
     """
-    用于记录训练过程中的指标，并在训练结束后统一保存曲线图。
-
-    使用方式：
-        monitor = TrainingMonitor(save_root="./training_vis")
-
-        for epoch in range(num_epochs):
-            train_metrics = trainer.train_one_epoch(...)
-            val_metrics = trainer.evaluate(...)
-
-            monitor.update(
-                epoch=epoch,
-                train_metrics=train_metrics,
-                val_metrics=val_metrics,
-            )
-
-        monitor.finalize()
-
-    记录格式示例：
-        train_metrics = {"loss": 0.52, "tri_acc": 0.81}
-        val_metrics   = {"loss": 0.47, "tri_acc": 0.84, "macro_auc": 0.91}
+    记录 epoch 级训练/验证指标，并在训练结束后统一输出：
+    1) history.csv / history.json
+    2) 标量曲线图（loss, acc, auc, lr...）
+    3) summary.txt
     """
+    save_root: str = "./training_vis"
+    run_name: Optional[str] = None
+    records: List[Dict] = field(default_factory=list)
 
-    def __init__(
-        self,
-        save_root: str = "./training_vis",
-        run_name: Optional[str] = None,
-    ):
+    def __post_init__(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if run_name is None:
-            run_name = f"run_{timestamp}"
-
-        self.save_dir = Path(save_root) / run_name
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-
-        self.records: List[Dict] = []
-
-    @staticmethod
-    def _to_float_dict(metrics: Optional[Dict]) -> Dict[str, float]:
-        if metrics is None:
-            return {}
-
-        out = {}
-        for k, v in metrics.items():
-            if v is None:
-                continue
-
-            # 支持 tensor / numpy scalar / float / int
-            if hasattr(v, "item"):
-                v = v.item()
-
-            try:
-                out[k] = float(v)
-            except (TypeError, ValueError):
-                # 非标量就跳过
-                continue
-
-        return out
+        if self.run_name is None:
+            self.run_name = f"run_{timestamp}"
+        self.save_dir = Path(self.save_root) / self.run_name
+        _ensure_dir(self.save_dir)
 
     def update(
         self,
         epoch: int,
         train_metrics: Optional[Dict] = None,
         val_metrics: Optional[Dict] = None,
-    ):
-        train_metrics = self._to_float_dict(train_metrics)
-        val_metrics = self._to_float_dict(val_metrics)
-
+    ) -> None:
         row = {"epoch": int(epoch)}
 
+        train_metrics = train_metrics or {}
+        val_metrics = val_metrics or {}
+
         for k, v in train_metrics.items():
-            row[f"train_{k}"] = v
+            fv = _to_float(v)
+            if fv is not None:
+                row[f"train_{k}"] = fv
 
         for k, v in val_metrics.items():
-            row[f"val_{k}"] = v
+            fv = _to_float(v)
+            if fv is not None:
+                row[f"val_{k}"] = fv
 
         self.records.append(row)
 
-    def _get_all_columns(self) -> List[str]:
+    def _all_columns(self) -> List[str]:
         cols = {"epoch"}
         for row in self.records:
             cols.update(row.keys())
-
-        # epoch 放第一列，其余按字母序
-        cols = list(cols)
         cols.remove("epoch")
-        cols = ["epoch"] + sorted(cols)
-        return cols
+        return ["epoch"] + sorted(cols)
 
-    def save_history_json(self):
+    def _base_metric_names(self) -> List[str]:
+        names = set()
+        for row in self.records:
+            for k in row.keys():
+                if k.startswith("train_"):
+                    names.add(k[len("train_"):])
+                elif k.startswith("val_"):
+                    names.add(k[len("val_"):])
+        return sorted(names)
+
+    def save_history_csv(self) -> None:
+        if not self.records:
+            return
+        save_path = self.save_dir / "history.csv"
+        columns = self._all_columns()
+        with open(save_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(self.records)
+
+    def save_history_json(self) -> None:
         save_path = self.save_dir / "history.json"
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(self.records, f, ensure_ascii=False, indent=2)
 
-    def save_history_csv(self):
+    def _plot_scalar_curve(self, metric_name: str) -> None:
         if not self.records:
             return
 
-        columns = self._get_all_columns()
-        save_path = self.save_dir / "history.csv"
-
-        with open(save_path, "w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=columns)
-            writer.writeheader()
-            for row in self.records:
-                writer.writerow(row)
-
-    def _collect_base_metric_names(self) -> List[str]:
-        """
-        从 train_loss / val_loss 中提取出 base metric: loss
-        """
-        metric_names = set()
-
-        for row in self.records:
-            for k in row.keys():
-                if k == "epoch":
-                    continue
-                if k.startswith("train_"):
-                    metric_names.add(k[len("train_"):])
-                elif k.startswith("val_"):
-                    metric_names.add(k[len("val_"):])
-
-        return sorted(metric_names)
-
-    def _plot_single_metric(self, metric_name: str):
         epochs = [row["epoch"] for row in self.records]
-
         train_key = f"train_{metric_name}"
         val_key = f"val_{metric_name}"
 
-        train_vals = [row.get(train_key, None) for row in self.records]
-        val_vals = [row.get(val_key, None) for row in self.records]
+        train_vals = [row.get(train_key) for row in self.records]
+        val_vals = [row.get(val_key) for row in self.records]
 
         has_train = any(v is not None for v in train_vals)
         has_val = any(v is not None for v in val_vals)
-
         if not has_train and not has_val:
             return
 
         plt.figure(figsize=(8, 5))
 
         if has_train:
-            x_train = [e for e, v in zip(epochs, train_vals) if v is not None]
-            y_train = [v for v in train_vals if v is not None]
-            plt.plot(x_train, y_train, marker="o", label=f"train_{metric_name}")
+            x = [e for e, v in zip(epochs, train_vals) if v is not None]
+            y = [v for v in train_vals if v is not None]
+            plt.plot(x, y, marker="o", label=f"train_{metric_name}")
 
         if has_val:
-            x_val = [e for e, v in zip(epochs, val_vals) if v is not None]
-            y_val = [v for v in val_vals if v is not None]
-            plt.plot(x_val, y_val, marker="o", label=f"val_{metric_name}")
+            x = [e for e, v in zip(epochs, val_vals) if v is not None]
+            y = [v for v in val_vals if v is not None]
+            plt.plot(x, y, marker="o", label=f"val_{metric_name}")
 
         plt.xlabel("Epoch")
         plt.ylabel(metric_name)
@@ -167,74 +142,264 @@ class TrainingMonitor:
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
-
-        save_path = self.save_dir / f"{metric_name}.png"
-        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+        plt.savefig(self.save_dir / f"{metric_name}.png", dpi=200, bbox_inches="tight")
         plt.close()
 
-    def _build_summary(self) -> str:
+    def save_scalar_plots(self) -> None:
+        for metric_name in self._base_metric_names():
+            self._plot_scalar_curve(metric_name)
+
+    def save_summary(self) -> None:
         if not self.records:
-            return "No records."
+            return
 
-        lines = []
-        lines.append(f"Total epochs recorded: {len(self.records)}")
+        larger_better = {"tri_acc", "bin_acc", "macro_auc", "binary_auc", "auc", "f1", "precision", "recall", "ap"}
+        smaller_better = {"loss", "loss_tri", "loss_bin"}
 
-        # 常见的“越大越好”指标
-        larger_better = ["tri_acc", "bin_acc", "macro_auc", "binary_auc", "auc", "f1", "ap"]
+        lines = [f"Total epochs recorded: {len(self.records)}"]
 
-        # 常见的“越小越好”指标
-        smaller_better = ["loss"]
-
-        base_metrics = self._collect_base_metric_names()
-
-        for metric in base_metrics:
-            val_key = f"val_{metric}"
-            train_key = f"train_{metric}"
+        for metric_name in self._base_metric_names():
+            val_key = f"val_{metric_name}"
+            train_key = f"train_{metric_name}"
 
             val_series = [(row["epoch"], row[val_key]) for row in self.records if val_key in row]
             train_series = [(row["epoch"], row[train_key]) for row in self.records if train_key in row]
 
-            if metric in smaller_better:
-                if val_series:
-                    best_epoch, best_val = min(val_series, key=lambda x: x[1])
-                    lines.append(f"Best val_{metric}: {best_val:.6f} @ epoch {best_epoch}")
-                elif train_series:
-                    best_epoch, best_val = min(train_series, key=lambda x: x[1])
-                    lines.append(f"Best train_{metric}: {best_val:.6f} @ epoch {best_epoch}")
-            elif metric in larger_better:
-                if val_series:
-                    best_epoch, best_val = max(val_series, key=lambda x: x[1])
-                    lines.append(f"Best val_{metric}: {best_val:.6f} @ epoch {best_epoch}")
-                elif train_series:
-                    best_epoch, best_val = max(train_series, key=lambda x: x[1])
-                    lines.append(f"Best train_{metric}: {best_val:.6f} @ epoch {best_epoch}")
+            if metric_name in smaller_better:
+                series = val_series if val_series else train_series
+                if series:
+                    best_epoch, best_val = min(series, key=lambda x: x[1])
+                    prefix = "val" if val_series else "train"
+                    lines.append(f"Best {prefix}_{metric_name}: {best_val:.6f} @ epoch {best_epoch}")
 
-        return "\n".join(lines)
+            elif metric_name in larger_better:
+                series = val_series if val_series else train_series
+                if series:
+                    best_epoch, best_val = max(series, key=lambda x: x[1])
+                    prefix = "val" if val_series else "train"
+                    lines.append(f"Best {prefix}_{metric_name}: {best_val:.6f} @ epoch {best_epoch}")
 
-    def save_summary(self):
-        summary = self._build_summary()
-        save_path = self.save_dir / "summary.txt"
-        with open(save_path, "w", encoding="utf-8") as f:
-            f.write(summary)
+        with open(self.save_dir / "summary.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
 
-    def finalize(self):
-        """
-        训练结束后统一保存：
-        - history.json
-        - history.csv
-        - 各指标曲线图
-        - summary.txt
-        """
-        if not self.records:
-            print("[TrainingMonitor] No records to save.")
-            return
-
-        self.save_history_json()
+    def finalize(self) -> None:
         self.save_history_csv()
-
-        for metric_name in self._collect_base_metric_names():
-            self._plot_single_metric(metric_name)
-
+        self.save_history_json()
+        self.save_scalar_plots()
         self.save_summary()
+        print(f"[TrainingVisualizer] saved to: {self.save_dir}")
 
-        print(f"[TrainingMonitor] All training curves saved to: {self.save_dir}")
+
+def plot_confusion_matrix(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: Sequence[str],
+    save_path: str,
+    normalize: bool = True,
+    title: str = "Confusion Matrix",
+) -> None:
+    cm = confusion_matrix(y_true, y_pred)
+    if normalize:
+        row_sum = cm.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1
+        cm = cm.astype(np.float64) / row_sum
+
+    plt.figure(figsize=(7, 6))
+    plt.imshow(cm, interpolation="nearest")
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(class_names))
+    plt.xticks(tick_marks, class_names, rotation=45)
+    plt.yticks(tick_marks, class_names)
+
+    fmt = ".2f" if normalize else "d"
+    thresh = cm.max() / 2.0 if cm.size > 0 else 0.5
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            plt.text(
+                j,
+                i,
+                format(cm[i, j], fmt),
+                ha="center",
+                va="center",
+                color="white" if cm[i, j] > thresh else "black",
+            )
+
+    plt.ylabel("True label")
+    plt.xlabel("Predicted label")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+
+def plot_binary_roc_pr(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    save_dir: str,
+    prefix: str = "binary",
+) -> Dict[str, float]:
+    """
+    y_true: [N], 0/1
+    y_score: [N], probability for positive class
+    """
+    save_dir = Path(save_dir)
+    _ensure_dir(save_dir)
+
+    metrics = {}
+
+    # ROC
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    roc_auc = auc(fpr, tpr)
+    metrics["auc"] = float(roc_auc)
+
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr, tpr, label=f"AUC={roc_auc:.4f}")
+    plt.plot([0, 1], [0, 1], linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"{prefix.upper()} ROC")
+    plt.legend(loc="lower right")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}_roc.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    # PR
+    precision, recall, _ = precision_recall_curve(y_true, y_score)
+    pr_auc = auc(recall, precision)
+    metrics["pr_auc"] = float(pr_auc)
+
+    plt.figure(figsize=(6, 5))
+    plt.plot(recall, precision, label=f"PR AUC={pr_auc:.4f}")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title(f"{prefix.upper()} PR")
+    plt.legend(loc="lower left")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}_pr.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    return metrics
+
+
+def plot_multiclass_roc_pr(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    class_names: Sequence[str],
+    save_dir: str,
+    prefix: str = "multiclass",
+) -> Dict[str, float]:
+    """
+    y_true: [N], int labels
+    y_prob: [N, C], class probabilities
+    """
+    save_dir = Path(save_dir)
+    _ensure_dir(save_dir)
+
+    num_classes = y_prob.shape[1]
+    y_true_bin = label_binarize(y_true, classes=list(range(num_classes)))
+
+    # macro ROC AUC
+    macro_auc = roc_auc_score(y_true_bin, y_prob, average="macro", multi_class="ovr")
+
+    # ROC curves
+    plt.figure(figsize=(7, 6))
+    for i in range(num_classes):
+        fpr, tpr, _ = roc_curve(y_true_bin[:, i], y_prob[:, i])
+        class_auc = auc(fpr, tpr)
+        plt.plot(fpr, tpr, label=f"{class_names[i]} (AUC={class_auc:.4f})")
+    plt.plot([0, 1], [0, 1], linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"{prefix.upper()} ROC (macro AUC={macro_auc:.4f})")
+    plt.legend(loc="lower right", fontsize=9)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}_roc.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    # PR curves
+    plt.figure(figsize=(7, 6))
+    pr_auc_dict = {}
+    for i in range(num_classes):
+        precision, recall, _ = precision_recall_curve(y_true_bin[:, i], y_prob[:, i])
+        class_pr_auc = auc(recall, precision)
+        pr_auc_dict[class_names[i]] = float(class_pr_auc)
+        plt.plot(recall, precision, label=f"{class_names[i]} (AUC={class_pr_auc:.4f})")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title(f"{prefix.upper()} PR")
+    plt.legend(loc="lower left", fontsize=9)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{prefix}_pr.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    metrics = {
+        "macro_auc": float(macro_auc),
+    }
+    for k, v in pr_auc_dict.items():
+        metrics[f"pr_auc_{k}"] = v
+    return metrics
+
+
+def save_final_classification_report(
+    save_dir: str,
+    tri_y_true: Optional[np.ndarray] = None,
+    tri_y_prob: Optional[np.ndarray] = None,
+    tri_class_names: Optional[Sequence[str]] = None,
+    bin_y_true: Optional[np.ndarray] = None,
+    bin_y_prob: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """
+    训练结束后调用：
+    - 保存三分类 confusion matrix / ROC / PR
+    - 保存二分类 confusion matrix / ROC / PR
+    """
+    save_dir = Path(save_dir)
+    _ensure_dir(save_dir)
+    metrics = {}
+
+    if tri_y_true is not None and tri_y_prob is not None and tri_class_names is not None:
+        tri_pred = np.argmax(tri_y_prob, axis=1)
+        plot_confusion_matrix(
+            y_true=tri_y_true,
+            y_pred=tri_pred,
+            class_names=tri_class_names,
+            save_path=str(save_dir / "tri_confusion_matrix.png"),
+            normalize=True,
+            title="3-Class Confusion Matrix",
+        )
+        tri_metrics = plot_multiclass_roc_pr(
+            y_true=tri_y_true,
+            y_prob=tri_y_prob,
+            class_names=tri_class_names,
+            save_dir=str(save_dir),
+            prefix="tri",
+        )
+        metrics.update(tri_metrics)
+
+    if bin_y_true is not None and bin_y_prob is not None:
+        bin_pred = (bin_y_prob >= 0.5).astype(np.int64)
+        plot_confusion_matrix(
+            y_true=bin_y_true,
+            y_pred=bin_pred,
+            class_names=["negative", "positive"],
+            save_path=str(save_dir / "bin_confusion_matrix.png"),
+            normalize=True,
+            title="Binary Confusion Matrix",
+        )
+        bin_metrics = plot_binary_roc_pr(
+            y_true=bin_y_true,
+            y_score=bin_y_prob,
+            save_dir=str(save_dir),
+            prefix="bin",
+        )
+        metrics["binary_auc"] = bin_metrics["auc"]
+        metrics["binary_pr_auc"] = bin_metrics["pr_auc"]
+
+    with open(save_dir / "final_eval_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+    return metrics

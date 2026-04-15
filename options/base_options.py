@@ -1,117 +1,99 @@
 import argparse
 import os
-import util
+from pathlib import Path
 import torch
 
 
-class BaseOptions():
+class BaseOptions:
     def __init__(self):
         self.initialized = False
 
     def initialize(self, parser):
-        parser.add_argument('--mode', default='binary')
-        parser.add_argument('--arch', type=str, default='res50', help='see my_models/__init__.py')
-        parser.add_argument('--fix_backbone', action='store_true')  
+        # ===== experiment =====
+        parser.add_argument("--name", type=str, default="clipfd_exp", help="experiment name")
+        parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints", help="checkpoint save root")
+        parser.add_argument("--gpu_ids", type=str, default="0", help="gpu ids, e.g. 0 or 0,1 or -1 for cpu")
 
-        # data augmentation
-        parser.add_argument('--rz_interp', default='bilinear')
-        parser.add_argument('--blur_prob', type=float, default=0.5)
-        parser.add_argument('--blur_sig', default='0.0,3.0')
-        parser.add_argument('--jpg_prob', type=float, default=0.5)
-        parser.add_argument('--jpg_method', default='cv2,pil')
-        parser.add_argument('--jpg_qual', default='30,100')
-        
-         
-        parser.add_argument('--real_list_path', default=None, help='only used if data_mode==ours: path for the list of real images, which should contain train.pickle and val.pickle')
-        parser.add_argument('--fake_list_path', default=None, help='only used if data_mode==ours: path for the list of fake images, which should contain train.pickle and val.pickle')
-        parser.add_argument('--wang2020_data_path', default=None, help='only used if data_mode==wang2020 it should contain train and test folders')
-        parser.add_argument('--data_mode',  default='ours', help='wang2020 or ours')
-        parser.add_argument('--data_label', default='train', help='label to decide whether train or validation dataset')
-        parser.add_argument('--weight_decay', type=float, default=0.0, help='loss weight for l2 reg')
-        
-        parser.add_argument('--class_bal', action='store_true') # what is this ?
-        parser.add_argument('--batch_size', type=int, default=256, help='input batch size')
-        parser.add_argument('--loadSize', type=int, default=256, help='scale images to this size')
-        parser.add_argument('--cropSize', type=int, default=224, help='then crop to this size')
-        parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
-        parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment. It decides where to store samples and models')
-        parser.add_argument('--num_threads', default=4, type=int, help='# threads for loading data')
-        parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints', help='models are saved here')
-        parser.add_argument('--serial_batches', action='store_true', help='if true, takes images in order to make batches, otherwise takes them randomly')
-        parser.add_argument('--resize_or_crop', type=str, default='scale_and_crop', help='scaling and cropping of images at load time [resize_and_crop|crop|scale_width|scale_width_and_crop|none]')
-        parser.add_argument('--no_flip', action='store_true', help='if specified, do not flip the images for data augmentation')
-        parser.add_argument('--init_type', type=str, default='normal', help='network initialization [normal|xavier|kaiming|orthogonal]')
-        parser.add_argument('--init_gain', type=float, default=0.02, help='scaling factor for normal, xavier and orthogonal.')
-        parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{netG}_size{loadSize}')
+        # ===== data =====
+        parser.add_argument("--train_image_root", type=str, default=None, help="train image folder")
+        parser.add_argument("--train_label_json", type=str, default=None, help="train label json")
+        parser.add_argument("--val_image_root", type=str, default=None, help="val image folder")
+        parser.add_argument("--val_label_json", type=str, default=None, help="val label json")
+        parser.add_argument("--test_image_root", type=str, default=None, help="test image folder")
+        parser.add_argument("--test_label_json", type=str, default=None, help="test label json")
+
+        # ===== dataloader =====
+        parser.add_argument("--batch_size", type=int, default=16, help="batch size")
+        parser.add_argument("--num_workers", type=int, default=4, help="dataloader workers")
+        parser.add_argument("--pin_memory", action="store_true", help="use pin_memory")
+        parser.add_argument("--persistent_workers", action="store_true", help="use persistent_workers")
+
+        # ===== image preprocess =====
+        parser.add_argument("--load_size", type=int, default=256, help="resize size before crop")
+        parser.add_argument("--image_size", type=int, default=224, help="final image size")
+        parser.add_argument("--no_crop", action="store_true", help="disable crop")
+        parser.add_argument("--no_flip", action="store_true", help="disable random flip in train")
+
+        # ===== model =====
+        parser.add_argument("--backbone_name", type=str, default="ViT-L/14", help="CLIP backbone name")
+        parser.add_argument("--freeze_backbone", action="store_true", help="freeze CLIP backbone")
+        parser.add_argument("--use_global_aux_head", action="store_true", help="enable global auxiliary binary head")
+
+        parser.add_argument("--final_num_classes", type=int, default=3, help="final fusion classifier classes")
+        parser.add_argument("--aux_num_classes", type=int, default=1, help="global auxiliary head output dim")
+
+        parser.add_argument("--local_hidden_dim", type=int, default=256)
+        parser.add_argument("--local_out_dim", type=int, default=768)
+        parser.add_argument("--local_num_blocks", type=int, default=2)
+        parser.add_argument("--proj_dropout", type=float, default=0.1)
+        parser.add_argument("--block_dropout", type=float, default=0.0)
+        parser.add_argument("--gn_groups", type=int, default=8)
+        parser.add_argument("--fusion_dropout", type=float, default=0.1)
+
         self.initialized = True
         return parser
 
     def gather_options(self):
-        # initialize parser with basic options
         if not self.initialized:
             parser = argparse.ArgumentParser(
-                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+                formatter_class=argparse.ArgumentDefaultsHelpFormatter
+            )
             parser = self.initialize(parser)
 
-        # get the basic options
-        opt, _ = parser.parse_known_args()
         self.parser = parser
-
         return parser.parse_args()
 
     def print_options(self, opt):
-        message = ''
-        message += '----------------- Options ---------------\n'
+        message = "----------------- Options ---------------\n"
         for k, v in sorted(vars(opt).items()):
-            comment = ''
             default = self.parser.get_default(k)
-            if v != default:
-                comment = '\t[default: %s]' % str(default)
-            message += '{:>25}: {:<30}{}\n'.format(str(k), str(v), comment)
-        message += '----------------- End -------------------'
+            comment = "" if v == default else f"\t[default: {default}]"
+            message += f"{str(k):>25}: {str(v):<30}{comment}\n"
+        message += "----------------- End -------------------"
         print(message)
 
-        # save to the disk
-        expr_dir = os.path.join(opt.checkpoints_dir, opt.name)
-        util.mkdirs(expr_dir)
-        file_name = os.path.join(expr_dir, 'opt.txt')
-        with open(file_name, 'wt') as opt_file:
-            opt_file.write(message)
-            opt_file.write('\n')
+        save_dir = Path(opt.checkpoints_dir) / opt.name
+        save_dir.mkdir(parents=True, exist_ok=True)
+        with open(save_dir / "opt.txt", "w", encoding="utf-8") as f:
+            f.write(message + "\n")
 
     def parse(self, print_options=True):
-
         opt = self.gather_options()
-        opt.isTrain = self.isTrain   # train or test
+        opt.isTrain = self.isTrain
 
-        # process opt.suffix
-        if opt.suffix:
-            suffix = ('_' + opt.suffix.format(**vars(opt))) if opt.suffix != '' else ''
-            opt.name = opt.name + suffix
+        # gpu ids
+        str_ids = opt.gpu_ids.split(",")
+        opt.gpu_ids = []
+        for s in str_ids:
+            gid = int(s)
+            if gid >= 0:
+                opt.gpu_ids.append(gid)
+
+        if len(opt.gpu_ids) > 0 and torch.cuda.is_available():
+            torch.cuda.set_device(opt.gpu_ids[0])
 
         if print_options:
             self.print_options(opt)
-
-        # set gpu ids
-        str_ids = opt.gpu_ids.split(',')
-        opt.gpu_ids = []
-        for str_id in str_ids:
-            id = int(str_id)
-            if id >= 0:
-                opt.gpu_ids.append(id)
-        if len(opt.gpu_ids) > 0:
-            torch.cuda.set_device(opt.gpu_ids[0])
-
-        # additional
-        #opt.classes = opt.classes.split(',')
-        opt.rz_interp = opt.rz_interp.split(',')
-        opt.blur_sig = [float(s) for s in opt.blur_sig.split(',')]
-        opt.jpg_method = opt.jpg_method.split(',')
-        opt.jpg_qual = [int(s) for s in opt.jpg_qual.split(',')]
-        if len(opt.jpg_qual) == 2:
-            opt.jpg_qual = list(range(opt.jpg_qual[0], opt.jpg_qual[1] + 1))
-        elif len(opt.jpg_qual) > 2:
-            raise ValueError("Shouldn't have more than 2 values for --jpg_qual.")
 
         self.opt = opt
         return self.opt

@@ -1,36 +1,18 @@
-
-# # 该项目文件完成对主体、分支、头部架构的组合，向外提供统一的完整的分类模型接口
-
+# 该项目文件完成对主体、分支、头部架构的组合，向外提供统一的完整的分类模型接口
 import torch
 import torch.nn as nn
 
-# 按你本地实际路径修改
 from .orign_CLIP_model.feature_extract import FeatureExtractor
-from .fusion.fusion import FeatureFusion
-
 from .branches.local_branch import LocalPatchBranch
 from .heads.distinct_head import ClassifierHead
+from .fusion.fusion import FeatureFusion
 
 
 class CLIPFDModel(nn.Module):
     """
-    CLIPFD 总模型组装模块
-
-    输入:
-        x: [B, 3, H, W]
-
-    输出:
-        {
-            "global_feat":   [B, 768],
-            "patch_tokens":  [B, N, 1024],
-            "global_logits": [B, num_classes],
-            "local_feat":    [B, 768],
-            "local_heatmap": [B, 1, H, W],
-            "fused_feat":    [B, 768],
-            "logits":        [B, num_classes],
-            "cls_token":     [B, 1024],        # 如果特征提取器返回
-            "grid_size":     (gh, gw),         # 如果特征提取器返回
-        }
+    纯模型组装模块：
+    只负责把特征提取、局部分支、融合、分类头串起来
+    不负责损失函数、优化器、训练流程
     """
 
     def __init__(
@@ -49,30 +31,33 @@ class CLIPFDModel(nn.Module):
         gn_groups: int = 8,
         eps: float = 1e-6,
         fusion_dropout: float = 0.1,
+        use_global_aux_head: bool = True,
     ):
         super().__init__()
 
-        # 1. CLIP 特征提取模块
+        # 1. CLIP 特征提取
         self.feature_extractor = FeatureExtractor(
             name=backbone_name,
             freeze=freeze_backbone,
             device=device,
         )
-
-        # 方便外部直接访问 CLIP preprocess
         self.preprocess = getattr(self.feature_extractor, "preprocess", None)
 
-        # 2. 全局辅助分类头
-        self.global_head = ClassifierHead(
-            in_dim=self.feature_extractor.global_dim,   # 通常 768
-            num_classes=num_classes,
-        )
+        # 2. 全局辅助头（可选）
+        self.use_global_aux_head = use_global_aux_head
+        if self.use_global_aux_head:
+            self.global_head = ClassifierHead(
+                in_dim=self.feature_extractor.global_dim,   # 768
+                num_classes=num_classes,
+            )
+        else:
+            self.global_head = None
 
         # 3. 局部分支
         self.local_branch = LocalPatchBranch(
-            in_dim=self.feature_extractor.local_dim,    # 通常 1024
+            in_dim=self.feature_extractor.local_dim,        # 1024
             hidden_dim=local_hidden_dim,
-            out_dim=local_out_dim,                      # 你当前设计是 768
+            out_dim=local_out_dim,                          # 768
             num_blocks=local_num_blocks,
             grid_size=grid_size,
             input_size=input_size,
@@ -84,7 +69,7 @@ class CLIPFDModel(nn.Module):
 
         # 4. 融合模块
         self.fusion_module = FeatureFusion(
-            feat_dim=local_out_dim,                     # 当前固定成 768
+            feat_dim=local_out_dim,                         # 768
             dropout=fusion_dropout,
         )
 
@@ -94,83 +79,50 @@ class CLIPFDModel(nn.Module):
             num_classes=num_classes,
         )
 
-    def freeze_backbone(self):
-        if hasattr(self.feature_extractor, "freeze"):
-            self.feature_extractor.freeze()
-
-    def unfreeze_backbone(self):
-        if hasattr(self.feature_extractor, "unfreeze"):
-            self.feature_extractor.unfreeze()
-
-    def forward(self, x: torch.Tensor) -> dict:
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_aux: bool = False,
+        return_features: bool = False,
+        return_heatmap: bool = False,
+    ) -> dict:
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"x must be a torch.Tensor, but got {type(x)}")
-
         if x.dim() != 4:
             raise ValueError(f"x must have shape [B, C, H, W], but got {tuple(x.shape)}")
 
-        # 1. 提取 CLIP 全局特征和 patch token
+        # 1. 提特征
         feat_out = self.feature_extractor(x)
+        global_feat = feat_out["global_feat"]          # [B, 768]
+        patch_tokens = feat_out["patch_tokens"]        # [B, N, 1024]
 
-        if not isinstance(feat_out, dict):
-            raise TypeError(f"feature_extractor must return dict, but got {type(feat_out)}")
-
-        if "global_feat" not in feat_out:
-            raise KeyError("feature_extractor output must contain 'global_feat'")
-        if "patch_tokens" not in feat_out:
-            raise KeyError("feature_extractor output must contain 'patch_tokens'")
-
-        global_feat = feat_out["global_feat"]        # [B, 768]
-        patch_tokens = feat_out["patch_tokens"]      # [B, N, 1024]
-
-        # 兼容你之前的两种 key 写法
-        cls_token = feat_out.get("cls_token", None)
-        grid_info = feat_out.get("grid_size", feat_out.get("(gh, gw)", None))
-
-        # 2. 全局辅助头
-        global_out = self.global_head(global_feat)
-        if not isinstance(global_out, dict) or "logits" not in global_out:
-            raise KeyError("global_head output must be dict and contain 'logits'")
-        global_logits = global_out["logits"]
-
-        # 3. 局部分支
+        # 2. 局部分支
         local_out = self.local_branch(patch_tokens)
-        if not isinstance(local_out, dict):
-            raise TypeError(f"local_branch must return dict, but got {type(local_out)}")
-        if "local_feat" not in local_out:
-            raise KeyError("local_branch output must contain 'local_feat'")
-        if "local_heatmap" not in local_out:
-            raise KeyError("local_branch output must contain 'local_heatmap'")
+        local_feat = local_out["local_feat"]           # [B, 768]
+        local_heatmap = local_out["local_heatmap"]     # [B, 1, H, W]
 
-        local_feat = local_out["local_feat"]              # [B, 768]
-        local_heatmap = local_out["local_heatmap"]        # [B, 1, H, W]
+        # 3. 融合
+        fused_feat = self.fusion_module(global_feat, local_feat)["fused_feat"]
 
-        # 4. 融合
-        fusion_out = self.fusion_module(global_feat, local_feat)
-        if not isinstance(fusion_out, dict) or "fused_feat" not in fusion_out:
-            raise KeyError("fusion_module output must be dict and contain 'fused_feat'")
-        fused_feat = fusion_out["fused_feat"]             # [B, 768]
-
-        # 5. 最终分类
-        final_out = self.final_head(fused_feat)
-        if not isinstance(final_out, dict) or "logits" not in final_out:
-            raise KeyError("final_head output must be dict and contain 'logits'")
-        logits = final_out["logits"]
+        # 4. 最终分类
+        logits = self.final_head(fused_feat)["logits"]
 
         outputs = {
-            "global_feat": global_feat,
-            "patch_tokens": patch_tokens,
-            "global_logits": global_logits,
-            "local_feat": local_feat,
-            "local_heatmap": local_heatmap,
-            "fused_feat": fused_feat,
-            "logits": logits,
+            "logits": logits
         }
 
-        if cls_token is not None:
-            outputs["cls_token"] = cls_token
+        # 训练时可选返回辅助头
+        if return_aux and self.use_global_aux_head:
+            outputs["global_logits"] = self.global_head(global_feat)["logits"]
 
-        if grid_info is not None:
-            outputs["grid_size"] = grid_info
+        # 可视化时可选返回热图
+        if return_heatmap:
+            outputs["local_heatmap"] = local_heatmap
+
+        # 调试/分析时可选返回中间特征
+        if return_features:
+            outputs["global_feat"] = global_feat
+            outputs["local_feat"] = local_feat
+            outputs["fused_feat"] = fused_feat
 
         return outputs

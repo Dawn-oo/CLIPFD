@@ -44,6 +44,12 @@ def load_label_index(label_json_path: Union[str, Path]) -> Dict[str, Dict[str, i
         "000001": {"binary_label": 1, "multi_label": 2},
         ...
     }
+
+    当前输入格式要求为：
+    {
+        "000001": {"是否有ai介入": 1, "具体类别": 2},
+        "000002": {"是否有ai介入": 0, "具体类别": 0}
+    }
     """
     label_json_path = Path(label_json_path)
     if not label_json_path.exists():
@@ -52,26 +58,27 @@ def load_label_index(label_json_path: Union[str, Path]) -> Dict[str, Dict[str, i
     with open(label_json_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
-    if not isinstance(raw, list):
-        raise ValueError("label json must be a list of dicts")
+    if not isinstance(raw, dict):
+        raise ValueError("label json must be a dict like {'000001': {...}, ...}")
 
     label_index = {}
-    for item in raw:
+
+    for sample_id, item in raw.items():
         if not isinstance(item, dict):
-            raise ValueError("each label item must be a dict")
+            raise ValueError(f"label info of sample '{sample_id}' must be a dict")
 
-        for key in ["id", "是否有ai介入", "具体类别"]:
+        for key in ["是否有AI介入", "具体类别"]:
             if key not in item:
-                raise KeyError(f"missing key '{key}' in label json item: {item}")
+                raise KeyError(f"missing key '{key}' in label json item: {sample_id} -> {item}")
 
-        sample_id = str(item["id"]).strip()
-        binary_label = int(item["是否有ai介入"])
+        sample_id = str(sample_id).strip()
+        binary_label = int(item["是否有AI介入"])
         multi_label = int(item["具体类别"])
 
         if binary_label not in (0, 1):
-            raise ValueError(f"binary label must be 0/1, got {binary_label}")
+            raise ValueError(f"binary label must be 0/1, got {binary_label} in sample '{sample_id}'")
         if multi_label not in (0, 1, 2):
-            raise ValueError(f"multi label must be 0/1/2, got {multi_label}")
+            raise ValueError(f"multi label must be 0/1/2, got {multi_label} in sample '{sample_id}'")
 
         label_index[sample_id] = {
             "binary_label": binary_label,

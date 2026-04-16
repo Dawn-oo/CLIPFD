@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from data import build_train_loader, build_test_loader
+from data_deal import build_train_loader, build_test_loader
 from models.assemble_model import CLIPFDModel
 from options.train_options import TrainOptions
 from trainer.trainer import Trainer

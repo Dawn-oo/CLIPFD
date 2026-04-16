@@ -14,7 +14,7 @@ class BaseOptions:
         parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints", help="checkpoint save root")
         parser.add_argument("--gpu_ids", type=str, default="0", help="gpu ids, e.g. 0 or 0,1 or -1 for cpu")
 
-        # ===== data =====
+        # ===== data_deal =====
         parser.add_argument("--train_image_root", type=str, default=None, help="train image folder")
         parser.add_argument("--train_label_json", type=str, default=None, help="train label json")
         parser.add_argument("--val_image_root", type=str, default=None, help="val image folder")

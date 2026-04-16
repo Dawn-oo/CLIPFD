@@ -88,8 +88,8 @@ class CLIPFDModel(nn.Module):
 
         # 1. 提特征
         feat_out = self.feature_extractor(x)
-        global_feat = feat_out["global_feat"]          # [B, 768]
-        patch_tokens = feat_out["patch_tokens"]        # [B, N, 1024]
+        global_feat = feat_out["global_feat"].float()    # [B, 768]
+        patch_tokens = feat_out["patch_tokens"].float()      # [B, N, 1024]
 
         # 2. 局部分支
         local_out = self.local_branch(patch_tokens)

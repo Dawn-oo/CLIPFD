@@ -13,7 +13,7 @@ class Trainer:
     面向当前 CLIPFDModel 的训练器
 
     约定：
-    - batch 来自新的 data/datasets.py
+    - batch 来自新的 data_deal/datasets.py
     - batch["image"]        : [B, 3, H, W]
     - batch["binary_label"] : [B]，float，0/1
     - batch["multi_label"]  : [B]，long，0/1/2

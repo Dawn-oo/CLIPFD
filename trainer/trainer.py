@@ -11,9 +11,6 @@ import torch.nn.functional as F
 class Trainer:
     """
     面向当前 CLIPFDModel 的训练器
-
-    约定：
-    - batch 来自新的 data_deal/datasets.py
     - batch["image"]        : [B, 3, H, W]
     - batch["binary_label"] : [B]，float，0/1
     - batch["multi_label"]  : [B]，long，0/1/2
@@ -36,6 +33,18 @@ class Trainer:
         grad_clip_norm: Optional[float] = None,
         save_dir: str = "./checkpoints",
     ):
+        """
+        :param model: 已经组装好的模型对象
+        :param device: 训练设备,这里默认使用GPU进行训练
+        :param lr: 学习率，默认0.0001
+        :param weight_decay: 权重衰减系数，默认0.0001
+        :param optimizer_type: 优化器类型
+        :param aux_loss_weight: 辅助二分类损失的权重
+        :param label_smoothing: 交叉熵平滑
+        :param use_amp: 是否启用AMP混合精度，默认启用
+        :param grad_clip_norm: 是否启用梯度裁剪
+        :param save_dir: checkpoint保存目录
+        """
         self.device = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
         self.model = model.to(self.device)
 
@@ -45,10 +54,12 @@ class Trainer:
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
+        # 取到能够更新的参数
         params = [p for p in self.model.parameters() if p.requires_grad]
         if len(params) == 0:
             raise RuntimeError("No trainable parameters found in model.")
 
+        # 优化器创建
         optimizer_type = optimizer_type.lower()
         if optimizer_type == "adamw":
             self.optimizer = torch.optim.AdamW(
@@ -66,9 +77,9 @@ class Trainer:
         else:
             raise ValueError(f"Unsupported optimizer_type: {optimizer_type}")
 
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
-        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
-        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp) # 给AMP混合精度训练使用，防止低精度下梯度太小发生下溢
+        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing) # 给最终三分类头用，对应损失
+        self.bce_loss = nn.BCEWithLogitsLoss() # 给全局分支辅助二分类使用，对应损失
 
     def _move_batch_to_device(self, batch: Dict) -> Dict:
         out = {}
@@ -104,7 +115,7 @@ class Trainer:
             if global_logits.dim() == 2 and global_logits.size(1) == 1:
                 global_logits = global_logits.squeeze(1)
 
-            loss_bin = self.bce_loss(global_logits, binary_label)
+            loss_bin = self.bce_loss(global_logits, binary_label) # 二分类辅助损失
             total_loss = total_loss + self.aux_loss_weight * loss_bin
 
             loss_dict["loss"] = total_loss
@@ -146,6 +157,7 @@ class Trainer:
         }
         num_steps = 0
 
+        # 训练核心
         for step, batch in enumerate(loader, start=1):
             batch = self._move_batch_to_device(batch)
 
@@ -363,4 +375,5 @@ class Trainer:
 
         print(f"Checkpoint loaded from: {checkpoint_path}")
         return epoch, extra
+
 

@@ -29,6 +29,7 @@ class FeatureExtractor(nn.Module):
     def extract_feat_and_tokens(self, x):
         return self.backbone.encode_image_with_tokens(x)
 
+    # 全局分支的前向传播
     def forward(self, x):
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"x must be a torch.Tensor, but got {type(x)}")

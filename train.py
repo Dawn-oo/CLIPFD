@@ -15,13 +15,12 @@ from models.assemble_model import CLIPFDModel
 from options.train_options import TrainOptions
 from trainer.trainer import Trainer
 
-# 可选：如果你已经把这个工具加进仓库了，就会自动启用
 try:
     from utils.training_monitor import TrainingVisualizer
 except ImportError:
     TrainingVisualizer = None
 
-
+# 用于从配置对象中安全地提取参数值
 def opt_get(opt, name, default):
     return getattr(opt, name, default)
 
@@ -30,7 +29,7 @@ def get_device(opt) -> str:
     gpu_ids = opt_get(opt, "gpu_ids", [])
     return "cuda" if len(gpu_ids) > 0 else "cpu"
 
-
+# 构建训练集和测试集两个数据集的实例对象，构建训练集和测试集两个数据加载器的实例对象
 def build_dataloaders(opt):
     train_dataset, train_loader = build_train_loader(
         image_root=opt.train_image_root,
@@ -143,11 +142,14 @@ def log_metrics(writer, split: str, metrics: dict, epoch: int):
 
 
 def main():
+    print("=" * 80)
+    print("开始加载训练阶段参数配置...")
     opt = TrainOptions().parse()
     device = get_device(opt)
-
+    print("训练阶段参数配置加载完成")
     save_dir = Path(opt.checkpoints_dir) / opt.name
     save_dir.mkdir(parents=True, exist_ok=True)
+    print("参数配置文件保存成功")
 
     print("=" * 80)
     print("Start training")
@@ -156,28 +158,40 @@ def main():
     print("=" * 80)
 
     # 1. dataloaders
+    print("=" * 80)
+    print("加载数据导入模块")
     train_dataset, train_loader, val_dataset, val_loader = build_dataloaders(opt)
 
     print(f"Train dataset size : {len(train_dataset)}")
     print(f"Val dataset size   : {len(val_dataset)}")
     print(f"Train steps/epoch  : {len(train_loader)}")
     print(f"Val steps          : {len(val_loader)}")
+    print("数据导入模块加载完成")
     print("=" * 80)
 
     # 2. model
+    print("=" * 80)
+    print("开始加载模型")
     model = build_model(opt, device)
+    print("模型加载完成")
+    print("=" * 80)
 
     # 3. trainer
+    print("=" * 80)
+    print("开始加载训练器")
     trainer = build_trainer(opt, model, save_dir, device)
+    print("训练器加载完成，开始训练...")
+    print("=" * 80)
+
 
     # 4. tensorboard
     train_writer = SummaryWriter(str(save_dir / "tensorboard" / "train")) if SummaryWriter else None
     val_writer = SummaryWriter(str(save_dir / "tensorboard" / "val")) if SummaryWriter else None
 
-    # 5. visualizer（可选）
+    # 5. visualizer
     visualizer = TrainingVisualizer(save_root=str(save_dir / "training_vis")) if TrainingVisualizer else None
 
-    # 6. resume（可选）
+    # 6. resume
     start_epoch = 0
     resume_path = opt_get(opt, "resume_path", None)
     if resume_path:

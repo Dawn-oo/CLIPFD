@@ -13,15 +13,15 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-
-def recursively_read_images(
-    rootdir: Union[str, Path],
-    exts: Optional[Sequence[str]] = None,
-) -> List[Path]:
+# 递归读取目录下所有图片
+def read_images(rootdir: Union[str, Path],exts: Optional[Sequence[str]] = None) -> List[Path]:
     """
-    递归读取目录下所有图片
+    :param rootdir:类型为字符串或pathlib.Path对象；指定要递归读取图片的根目录路径。函数内部会将其转换为Path对象，并检查该目录是否存在；
+    :param exts:指定允许的图片文件扩展名；
+    :return:按字母顺序排序后的图片文件路径列表
     """
     rootdir = Path(rootdir)
+
     if not rootdir.exists():
         raise FileNotFoundError(f"image root does not exist: {rootdir}")
 
@@ -39,17 +39,13 @@ def recursively_read_images(
 
 def load_label_index(label_json_path: Union[str, Path]) -> Dict[str, Dict[str, int]]:
     """
-    读取固定格式的标签 json，并转成：
-    {
-        "000001": {"binary_label": 1, "multi_label": 2},
-        ...
-    }
-
     当前输入格式要求为：
     {
         "000001": {"是否有ai介入": 1, "具体类别": 2},
         "000002": {"是否有ai介入": 0, "具体类别": 0}
     }
+    :param label_json_path:标签文件的路径，要以json结尾
+    :return: 标签信息
     """
     label_json_path = Path(label_json_path)
     if not label_json_path.exists():
@@ -69,7 +65,7 @@ def load_label_index(label_json_path: Union[str, Path]) -> Dict[str, Dict[str, i
 
         for key in ["是否有AI介入", "具体类别"]:
             if key not in item:
-                raise KeyError(f"missing key '{key}' in label json item: {sample_id} -> {item}")
+                raise KeyError(f"missing key '{key}' in label json item: {sample_id} -> {item}, key name must be '是否有AI介入' and '具体类别'")
 
         sample_id = str(sample_id).strip()
         binary_label = int(item["是否有AI介入"])
@@ -95,14 +91,10 @@ class TrainImageJsonDataset(Dataset):
     - 使用训练增强
     """
 
-    def __init__(
-        self,
-        image_root: Union[str, Path],
-        label_json_path: Union[str, Path],
-        transform=None,
-    ):
+    def __init__(self,image_root: Union[str, Path],label_json_path: Union[str, Path],transform=None):
+
         self.image_root = Path(image_root)
-        self.image_paths = recursively_read_images(self.image_root)
+        self.image_paths = read_images(self.image_root)
         if len(self.image_paths) == 0:
             raise RuntimeError(f"no images found in {self.image_root}")
 
@@ -110,6 +102,7 @@ class TrainImageJsonDataset(Dataset):
         self.transform = transform if transform is not None else TrainImageTransform()
         self.samples = self._build_samples()
 
+    # 构建并返回样本列表
     def _build_samples(self) -> List[Dict]:
         samples = []
 
@@ -151,8 +144,7 @@ class TrainImageJsonDataset(Dataset):
 
 class TestImageJsonDataset(Dataset):
     """
-    验证 / 测试集：
-    - 可带标签，也可不带标签
+    验证/测试集：
     - 使用测试预处理，不做训练增强
     """
 
@@ -163,7 +155,7 @@ class TestImageJsonDataset(Dataset):
         transform=None,
     ):
         self.image_root = Path(image_root)
-        self.image_paths = recursively_read_images(self.image_root)
+        self.image_paths = read_images(self.image_root)
         if len(self.image_paths) == 0:
             raise RuntimeError(f"no images found in {self.image_root}")
 
@@ -295,3 +287,6 @@ def build_test_loader(
     )
 
     return dataset, loader
+
+# 返回的数据集实例对象负责存储图像路径、标签，并实现 __getitem__ 和 __len__ 方法，用于按索引返回单个样本（图像 tensor、标签、ID 等）；
+# 返回的数据加载器实例对象负责包装dataset，提供批量迭代、多进程加载、打乱顺序（训练时）等功能，是实际训练/测试时循环使用的对象

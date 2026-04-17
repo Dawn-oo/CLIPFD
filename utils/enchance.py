@@ -13,9 +13,7 @@ CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
 
 
 def pil_jpeg_compress(img: Image.Image, quality: int) -> Image.Image:
-    """
-    使用 PIL 对图片进行 JPEG 压缩模拟
-    """
+    """使用PIL对图片进行JPEG压缩"""
     buffer = BytesIO()
     img.save(buffer, format="JPEG", quality=quality)
     buffer.seek(0)
@@ -23,25 +21,15 @@ def pil_jpeg_compress(img: Image.Image, quality: int) -> Image.Image:
     return out
 
 
-def random_blur(
-    img: Image.Image,
-    blur_radius: Tuple[float, float] = (0.1, 1.5),
-) -> Image.Image:
-    """
-    随机高斯模糊
-    """
+def random_blur(img: Image.Image,blur_radius: Tuple[float, float] = (0.1, 1.5)) -> Image.Image:
+    """随机高斯模糊"""
     low, high = blur_radius
     radius = low + (high - low) * torch.rand(1).item()
     return img.filter(ImageFilter.GaussianBlur(radius=radius))
 
 
-def random_jpeg(
-    img: Image.Image,
-    jpg_quality: Tuple[int, int] = (65, 95),
-) -> Image.Image:
-    """
-    随机 JPEG 压缩
-    """
+def random_jpeg(img: Image.Image,jpg_quality: Tuple[int, int] = (65, 95)) -> Image.Image:
+    """随机JPEG压缩"""
     low, high = jpg_quality
     quality = int(torch.randint(low, high + 1, (1,)).item())
     return pil_jpeg_compress(img, quality=quality)
@@ -74,18 +62,9 @@ class TrainImageTransform:
         self.jpg_prob = jpg_prob
         self.jpg_quality = jpg_quality
 
-        self.resize = transforms.Resize(
-            (load_size, load_size),
-            interpolation=transforms.InterpolationMode.BICUBIC
-        )
-        self.crop = (
-            transforms.Lambda(lambda x: x)
-            if no_crop else transforms.RandomCrop(image_size)
-        )
-        self.flip = (
-            transforms.Lambda(lambda x: x)
-            if no_flip else transforms.RandomHorizontalFlip(p=0.5)
-        )
+        self.resize = transforms.Resize((load_size, load_size),interpolation=transforms.InterpolationMode.BICUBIC)
+        self.crop = (transforms.Lambda(lambda x: x)if no_crop else transforms.RandomCrop(image_size))
+        self.flip = (transforms.Lambda(lambda x: x)if no_flip else transforms.RandomHorizontalFlip(p=0.5))
         self.normalize = transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD)
 
     def __call__(self, img: Image.Image):

@@ -5,23 +5,23 @@ class TrainOptions(BaseOptions):
     def initialize(self, parser):
         parser = BaseOptions.initialize(self, parser)
 
-        # ===== training =====
-        parser.add_argument("--epochs", type=int, default=20, help="total training epochs")
-        parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
-        parser.add_argument("--weight_decay", type=float, default=1e-4, help="weight decay")
+        # ===== 训练参数配置 =====
+        parser.add_argument("--epochs", type=int, default=20, help="总训练轮次，默认20轮")
+        parser.add_argument("--lr", type=float, default=1e-4, help="学习率")
+        parser.add_argument("--weight_decay", type=float, default=1e-4, help="权重衰减系数，L2正则化")
         parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "sgd"])
-        parser.add_argument("--label_smoothing", type=float, default=0.0, help="cross entropy label smoothing")
-        parser.add_argument("--aux_loss_weight", type=float, default=0.3, help="weight for auxiliary binary loss")
-        parser.add_argument("--use_amp", action="store_true", help="use automatic mixed precision")
-        parser.add_argument("--grad_clip_norm", type=float, default=1.0, help="gradient clip norm")
-        parser.add_argument("--log_interval", type=int, default=20, help="print log every N steps")
-        parser.add_argument("--save_epoch_freq", type=int, default=1, help="save checkpoint every N epochs")
+        parser.add_argument("--label_smoothing", type=float, default=0.0, help="交叉熵损失的标签平滑系数")
+        parser.add_argument("--aux_loss_weight", type=float, default=0.3, help="辅助二分类损失（全局辅助头）在总损失中的权重")
+        parser.add_argument("--use_amp", action="store_true", help="是否启用自动混合精度，可加速训练并减少显存占用")
+        parser.add_argument("--grad_clip_norm", type=float, default=1.0, help="梯度裁剪的最大L2范数。当梯度的范数超过该值时，会将其缩放到此阈值，防止梯度爆炸")
+        parser.add_argument("--log_interval", type=int, default=20, help="每训练多少次打印一次日志")
+        parser.add_argument("--save_epoch_freq", type=int, default=1, help="每隔多少个训练轮次保留一个检查点")
 
-        # ===== train augment =====
-        parser.add_argument("--blur_prob", type=float, default=0.1, help="probability of blur augmentation")
-        parser.add_argument("--blur_radius", type=str, default="0.1,1.5", help="blur radius range, e.g. 0.1,1.5")
-        parser.add_argument("--jpg_prob", type=float, default=0.1, help="probability of jpeg augmentation")
-        parser.add_argument("--jpg_quality", type=str, default="65,95", help="jpeg quality range, e.g. 65,95")
+        # ===== 训练阶段图像处理配置参数 =====
+        parser.add_argument("--blur_prob", type=float, default=0.1, help="对输入图像应用高斯模糊增强的概率")
+        parser.add_argument("--blur_radius", type=str, default="0.1,1.5", help="高斯模糊半径范围")
+        parser.add_argument("--jpg_prob", type=float, default=0.1, help="对图像应用JPEG压缩伪像增强的概率")
+        parser.add_argument("--jpg_quality", type=str, default="65,95", help="JPEG 质量参数范围（最小值,最大值）；质量越低，压缩伪像越明显")
 
         self.isTrain = True
         return parser

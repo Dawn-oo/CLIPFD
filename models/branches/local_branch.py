@@ -5,12 +5,22 @@ import torch.nn.functional as F
 
 
 
-# 该模块用于提取出来的局部特征的处理
+# 将二维卷积、组归一化和 GELU 激活函数按顺序封装成一个模块
 class ConvGNAct(nn.Sequential):
     """
     Conv -> GroupNorm -> GELU
     """
     def __init__(self, in_ch, out_ch, k=3, s=1, p=1, groups=1, gn_groups=8, act=True):
+        """
+        :param in_ch:输入特征图的通道数
+        :param out_ch:输出特征的通道数
+        :param k:卷积核大小，默认3*3
+        :param s:卷积步长大小
+        :param p:填充的大小
+        :param groups:卷积的分组数
+        :param gn_groups:组归一化期望的分组数量
+        :param act:是否添加GELU激活函数
+        """
         gn_groups = self._safe_groups(out_ch, gn_groups)
         layers = [
             nn.Conv2d(
@@ -28,6 +38,7 @@ class ConvGNAct(nn.Sequential):
             layers.append(nn.GELU())
         super().__init__(*layers)
 
+    # 确定组归一化的分组，如果无法被整除，则进行自动调整
     @staticmethod
     def _safe_groups(channels, target_groups):
         target_groups = max(1, min(target_groups, channels))
@@ -40,7 +51,8 @@ class ConvGNAct(nn.Sequential):
 class ResidualLocalBlock(nn.Module):
     """
     轻量局部关系建模：
-    depthwise 3x3 + pointwise 1x1 + residual
+    深度卷积：对输入特征图的每个通道独立进行空间特征提取（不跨通道混合）；
+    逐点卷积：对深度卷积的输出进行跨通道的信息融合（类似全连接层）
     """
     def __init__(self, channels, gn_groups=8, dropout=0.0):
         super().__init__()
@@ -70,21 +82,8 @@ class ResidualLocalBlock(nn.Module):
         return x + self.drop(self.pw(self.dw(x)))
 
 
+# 把局部patch特征向量转换成二维局部特征图，做局部关系建模，再压缩成一个局部表征向量，供后续与全局特征融合使用。
 class LocalPatchBranch(nn.Module):
-    """
-    输入:
-        patch_tokens: [B, N, C]
-
-    输出:
-        {
-            "local_feat":    [B, 768],
-            "local_heatmap": [B, 1, H_in, W_in]
-        }
-
-    说明:
-    - 内部仍会先生成 patch 网格热图，用于加权池化
-    - 但不再对外返回 patch 层热图
-    """
     def __init__(
         self,
         in_dim,
@@ -98,6 +97,16 @@ class LocalPatchBranch(nn.Module):
         gn_groups=8,
         # eps=1e-6,
     ):
+        """
+        :param in_dim:输入patch token特征向量的维度，默认为1024维；
+        :param hidden_dim:局部分支内部处理时使用的隐藏通道数；
+        :param out_dim:局部分支最后输出向量的维度；
+        :param num_blocks:局部分支在 patch 网格上做多少层局部卷积推理
+        :param grid_size:patch网格的高宽
+        :param proj_dropout:投影层和最终输出投影层使用的dropout比例；
+        :param block_dropout:局部残差块内部的dropout强度；
+        :param gn_groups:分组数目标值
+        """
         super().__init__()
 
         if in_dim <= 0 or hidden_dim <= 0 or out_dim <= 0:

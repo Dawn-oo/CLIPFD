@@ -31,6 +31,22 @@ class CLIPFDModel(nn.Module):
         fusion_dropout: float = 0.1,
         use_global_aux_head: bool = True,
     ):
+        """
+        :param backbone_name: 使用的主干模型名称
+        :param freeze_backbone: 是否冻结主干参数，默认冻结
+        :param device: 训练时使用的设备gpu或cpu
+        :param final_num_classes: 最终融合头的类别
+        :param aux_num_classes: 全局分支的判别
+        :param grid_size:局部分支中patch的网格大小
+        :param local_hidden_dim: 局部分支中隐藏层的维度
+        :param local_out_dim: 局部分支最终输出特征的维度
+        :param local_num_blocks: 局部分支残差块堆叠层数
+        :param proj_dropout: 局部分支中投影层的Dropout概率
+        :param block_dropout: 局部分支中每个残差块内部的Dropout概率
+        :param gn_groups: 组归一化的分组数量
+        :param fusion_dropout: 融合模块的dropout概率
+        :param use_global_aux_head: 是否启用全局辅助头
+        """
         super().__init__()
 
         # 1. CLIP 特征提取
@@ -41,7 +57,7 @@ class CLIPFDModel(nn.Module):
         )
         self.preprocess = getattr(self.feature_extractor, "preprocess", None)
 
-        # 2. 全局辅助头（可选）
+        # 2. 全局辅助头
         self.use_global_aux_head = use_global_aux_head
         if self.use_global_aux_head:
             self.global_head = ClassifierHead(

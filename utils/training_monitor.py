@@ -403,3 +403,138 @@ def save_final_classification_report(
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
     return metrics
+
+def compute_per_class_accuracy(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: Sequence[str],
+) -> Dict[str, float]:
+    y_true = np.asarray(y_true).astype(np.int64)
+    y_pred = np.asarray(y_pred).astype(np.int64)
+
+    metrics = {}
+    valid_accs = []
+
+    for class_idx, class_name in enumerate(class_names):
+        mask = (y_true == class_idx)
+        total = int(mask.sum())
+
+        metrics[f"class_total_{class_name}"] = total
+
+        if total == 0:
+            metrics[f"class_acc_{class_name}"] = None
+            continue
+
+        acc = float((y_pred[mask] == class_idx).mean())
+        metrics[f"class_acc_{class_name}"] = acc
+        valid_accs.append(acc)
+
+    if valid_accs:
+        metrics["mean_class_acc"] = float(np.mean(valid_accs))
+
+    return metrics
+
+
+def save_epoch_classification_artifacts(
+    save_dir: str,
+    tri_y_true: Optional[np.ndarray] = None,
+    tri_y_prob: Optional[np.ndarray] = None,
+    tri_class_names: Optional[Sequence[str]] = None,
+    bin_y_true: Optional[np.ndarray] = None,
+    bin_y_prob: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """
+    每个 epoch 调用一次：
+    - 保存三分类 confusion matrix / ROC / PR
+    - 保存二分类 confusion matrix / ROC / PR
+    - 保存三个类别各自准确率
+    - 保存原始 y_true / y_prob / confusion matrix，便于后续复查
+    """
+    save_dir = Path(save_dir)
+    _ensure_dir(save_dir)
+
+    metrics = {}
+
+    if tri_y_true is not None and tri_y_prob is not None and tri_class_names is not None:
+        tri_y_true = np.asarray(tri_y_true).astype(np.int64)
+        tri_y_prob = np.asarray(tri_y_prob).astype(np.float64)
+        tri_y_pred = np.argmax(tri_y_prob, axis=1)
+
+        np.save(save_dir / "tri_y_true.npy", tri_y_true)
+        np.save(save_dir / "tri_y_prob.npy", tri_y_prob)
+        np.save(save_dir / "tri_y_pred.npy", tri_y_pred)
+
+        tri_cm_raw = confusion_matrix(
+            tri_y_true,
+            tri_y_pred,
+            labels=list(range(len(tri_class_names))),
+        )
+        np.save(save_dir / "tri_confusion_matrix_raw.npy", tri_cm_raw)
+
+        plot_confusion_matrix(
+            y_true=tri_y_true,
+            y_pred=tri_y_pred,
+            class_names=tri_class_names,
+            save_path=str(save_dir / "tri_confusion_matrix.png"),
+            normalize=True,
+            title="3-Class Confusion Matrix",
+        )
+
+        tri_metrics = plot_multiclass_roc_pr(
+            y_true=tri_y_true,
+            y_prob=tri_y_prob,
+            class_names=tri_class_names,
+            save_dir=str(save_dir),
+            prefix="tri",
+        )
+
+        class_acc_metrics = compute_per_class_accuracy(
+            y_true=tri_y_true,
+            y_pred=tri_y_pred,
+            class_names=tri_class_names,
+        )
+
+        tri_all_metrics = {**tri_metrics, **class_acc_metrics}
+        metrics.update(tri_all_metrics)
+
+        with open(save_dir / "tri_metrics.json", "w", encoding="utf-8") as f:
+            json.dump(tri_all_metrics, f, ensure_ascii=False, indent=2)
+
+    if bin_y_true is not None and bin_y_prob is not None:
+        bin_y_true = np.asarray(bin_y_true).astype(np.int64)
+        bin_y_prob = np.asarray(bin_y_prob).astype(np.float64)
+        bin_y_pred = (bin_y_prob >= 0.5).astype(np.int64)
+
+        np.save(save_dir / "bin_y_true.npy", bin_y_true)
+        np.save(save_dir / "bin_y_prob.npy", bin_y_prob)
+        np.save(save_dir / "bin_y_pred.npy", bin_y_pred)
+
+        bin_cm_raw = confusion_matrix(bin_y_true, bin_y_pred, labels=[0, 1])
+        np.save(save_dir / "bin_confusion_matrix_raw.npy", bin_cm_raw)
+
+        plot_confusion_matrix(
+            y_true=bin_y_true,
+            y_pred=bin_y_pred,
+            class_names=["negative", "positive"],
+            save_path=str(save_dir / "bin_confusion_matrix.png"),
+            normalize=True,
+            title="Binary Confusion Matrix",
+        )
+
+        bin_metrics = plot_binary_roc_pr(
+            y_true=bin_y_true,
+            y_score=bin_y_prob,
+            save_dir=str(save_dir),
+            prefix="bin",
+        )
+
+        metrics["binary_auc"] = float(bin_metrics["auc"])
+        metrics["binary_pr_auc"] = float(bin_metrics["pr_auc"])
+
+        with open(save_dir / "bin_metrics.json", "w", encoding="utf-8") as f:
+            json.dump(bin_metrics, f, ensure_ascii=False, indent=2)
+
+    with open(save_dir / "epoch_eval_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+    return metrics

@@ -45,7 +45,7 @@ class BaseOptions:
         parser.add_argument("--backbone_name", type=str, default=r"E:\Project\CLIPFD\models\parameters\ViT-L-14.pt", help="模型主体参数配置文件")
         parser.add_argument("--freeze_backbone",action="store_true",default=True,help="冻结主体模型参数不做训练")
         parser.add_argument("--unfreeze_backbone",action="store_false",dest="freeze_backbone",help="不冻结模型主干参数，参与训练的更新")
-        parser.add_argument("--use_global_aux_head", action="store_true", help="是否使用全局特征进行二分类，")
+        parser.add_argument("--use_global_aux_head", action="store_true", help="是否使用全局特征进行二分类")
         parser.add_argument("--final_num_classes", type=int, default=3, help="最后使用融合特征进行分类的种数")
         parser.add_argument("--aux_num_classes", type=int, default=1, help="如果启用全局辅助头，它的输出维度是多少，默认为二分类")
 

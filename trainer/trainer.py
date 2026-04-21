@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
 
 class Trainer:
     """
@@ -77,9 +77,9 @@ class Trainer:
         else:
             raise ValueError(f"Unsupported optimizer_type: {optimizer_type}")
 
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp) # 给AMP混合精度训练使用，防止低精度下梯度太小发生下溢
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp) # 梯度缩放器，给AMP混合精度训练使用，防止低精度下梯度太小发生下溢，
         self.ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing) # 给最终三分类头用，对应损失
-        self.bce_loss = nn.BCEWithLogitsLoss() # 给全局分支辅助二分类使用，对应损失
+        self.bce_loss = nn.BCEWithLogitsLoss() # 给全局分支辅助二分类使用，对应损失 这个损失函数就是一个二元交叉熵损失和一个sigmod函数的融合；
 
     def _move_batch_to_device(self, batch: Dict) -> Dict:
         out = {}
@@ -113,10 +113,10 @@ class Trainer:
             binary_label = batch["binary_label"].float()
 
             if global_logits.dim() == 2 and global_logits.size(1) == 1:
-                global_logits = global_logits.squeeze(1)
+                global_logits = global_logits.squeeze(1) # 去除张量中第1维（索引从0开始）上大小为1的维度，为了匹配损失函数的要求，
 
             loss_bin = self.bce_loss(global_logits, binary_label) # 二分类辅助损失
-            total_loss = total_loss + self.aux_loss_weight * loss_bin
+            total_loss = total_loss + self.aux_loss_weight * loss_bin # 总损失函数
 
             loss_dict["loss"] = total_loss
             loss_dict["loss_bin"] = loss_bin.detach()
@@ -146,23 +146,18 @@ class Trainer:
         return metrics
 
     def train_one_epoch(self, loader, epoch: int = 0, log_interval: int = 50):
-        self.model.train()
+        self.model.train() # 初始化累计器，用于统计整个epoch的平均指标
 
-        running = {
-            "loss": 0.0,
-            "loss_tri": 0.0,
-            "loss_bin": 0.0,
-            "tri_acc": 0.0,
-            "bin_acc": 0.0,
-        }
+        running = {"loss": 0.0,"loss_tri": 0.0,"loss_bin": 0.0,"tri_acc": 0.0,"bin_acc": 0.0}
         num_steps = 0
 
         # 训练核心
         for step, batch in enumerate(loader, start=1):
             batch = self._move_batch_to_device(batch)
 
-            self.optimizer.zero_grad(set_to_none=True)
+            self.optimizer.zero_grad(set_to_none=True) # 每轮训练梯度清零
 
+            # 前向
             with torch.amp.autocast("cuda", enabled=self.use_amp):
                 outputs = self.model(
                     batch["image"],
@@ -172,15 +167,19 @@ class Trainer:
                 loss_dict = self.compute_losses(outputs, batch)
                 loss = loss_dict["loss"]
 
+            # 反向传播
             self.scaler.scale(loss).backward()
 
+            # 梯度裁剪，防止梯度爆炸
             if self.grad_clip_norm is not None:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
 
+            #正式更新参数，并更新scaler状态
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
+            # 计算batch指标，统计本轮累计值
             metrics = self._compute_batch_metrics(outputs, batch)
 
             running["loss"] += loss_dict["loss"].item()
@@ -193,6 +192,7 @@ class Trainer:
 
             num_steps += 1
 
+            # 按间隔打印训练进度
             if step % log_interval == 0:
                 print(
                     f"[Train] epoch={epoch} step={step}/{len(loader)} "
@@ -201,8 +201,10 @@ class Trainer:
                     f"bin_acc={metrics.get('bin_acc', 0.0):.4f}"
                 )
 
+        # 记录当前学习率，后面用于可视化
         current_lr = self.optimizer.param_groups[0]["lr"]
 
+        # 结果，把整个epoch的平均训练指标打包成一个字典返回
         result = {
             "loss": running["loss"] / max(num_steps, 1),
             "loss_tri": running["loss_tri"] / max(num_steps, 1),
@@ -218,7 +220,8 @@ class Trainer:
         return result
 
     @torch.no_grad()
-    def evaluate(self, loader, epoch: int = 0):
+    @torch.no_grad()
+    def evaluate(self, loader, epoch: int = 0, return_details: bool = False):
         self.model.eval()
 
         running = {
@@ -256,18 +259,22 @@ class Trainer:
 
             running["tri_acc"] += metrics.get("tri_acc", 0.0)
             running["bin_acc"] += metrics.get("bin_acc", 0.0)
-
             num_steps += 1
 
             tri_probs = torch.softmax(outputs["logits"], dim=1)
             tri_targets = batch["multi_label"]
+
             all_tri_probs.append(tri_probs.detach().cpu())
             all_tri_targets.append(tri_targets.detach().cpu())
 
             if "global_logits" in outputs and "binary_label" in batch:
-                g = outputs["global_logits"].squeeze(1)
+                g = outputs["global_logits"]
+                if g.dim() == 2 and g.size(1) == 1:
+                    g = g.squeeze(1)
+
                 bin_probs = torch.sigmoid(g)
                 bin_targets = batch["binary_label"]
+
                 all_bin_probs.append(bin_probs.detach().cpu())
                 all_bin_targets.append(bin_targets.detach().cpu())
 
@@ -282,17 +289,24 @@ class Trainer:
         if running["bin_acc"] > 0:
             result["bin_acc"] = running["bin_acc"] / max(num_steps, 1)
 
-        # ===== 这里补 AUC =====
+        tri_probs_np = None
+        tri_targets_np = None
+        bin_probs_np = None
+        bin_targets_np = None
+
         if len(all_tri_probs) > 0:
-            tri_probs = torch.cat(all_tri_probs, dim=0).numpy()
-            tri_targets = torch.cat(all_tri_targets, dim=0)
-            tri_targets_onehot = F.one_hot(tri_targets, num_classes=tri_probs.shape[1]).numpy()
+            tri_probs_np = torch.cat(all_tri_probs, dim=0).numpy()
+            tri_targets_np = torch.cat(all_tri_targets, dim=0).numpy()
+            tri_targets_onehot = F.one_hot(
+                torch.from_numpy(tri_targets_np),
+                num_classes=tri_probs_np.shape[1],
+            ).numpy()
 
             try:
                 from sklearn.metrics import roc_auc_score
                 macro_auc = roc_auc_score(
                     tri_targets_onehot,
-                    tri_probs,
+                    tri_probs_np,
                     multi_class="ovr",
                     average="macro",
                 )
@@ -301,17 +315,26 @@ class Trainer:
                 pass
 
         if len(all_bin_probs) > 0:
-            bin_probs = torch.cat(all_bin_probs, dim=0).numpy()
-            bin_targets = torch.cat(all_bin_targets, dim=0).numpy()
+            bin_probs_np = torch.cat(all_bin_probs, dim=0).numpy()
+            bin_targets_np = torch.cat(all_bin_targets, dim=0).numpy()
 
             try:
                 from sklearn.metrics import roc_auc_score
-                binary_auc = roc_auc_score(bin_targets, bin_probs)
+                binary_auc = roc_auc_score(bin_targets_np, bin_probs_np)
                 result["binary_auc"] = float(binary_auc)
             except ValueError:
                 pass
 
-        return result
+        if not return_details:
+            return result
+
+        details = {
+            "tri_y_true": tri_targets_np,
+            "tri_y_prob": tri_probs_np,
+            "bin_y_true": bin_targets_np,
+            "bin_y_prob": bin_probs_np,
+        }
+        return result, details
 
     @torch.no_grad()
     def predict(self, loader):

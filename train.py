@@ -1,24 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-try:
-    from torch.utils.tensorboard import SummaryWriter
-except ImportError:
-    try:
-        from tensorboardX import SummaryWriter
-    except ImportError:
-        SummaryWriter = None
-
+from torch.utils.tensorboard import SummaryWriter
 from data_deal import build_train_loader, build_test_loader
 from models.assemble_model import CLIPFDModel
 from options.train_options import TrainOptions
 from trainer.trainer import Trainer
+from utils.training_monitor import TrainingVisualizer,save_epoch_classification_artifacts
 
-try:
-    from utils.training_monitor import TrainingVisualizer
-except ImportError:
-    TrainingVisualizer = None
 
 # 用于从配置对象中安全地提取参数值
 def opt_get(opt, name, default):
@@ -48,6 +37,19 @@ def build_dataloaders(opt):
         jpg_quality=opt_get(opt, "jpg_quality", (65, 95)),
     )
 
+    # 训练集评估专用,画 trainROC
+    train_eval_dataset, train_eval_loader = build_test_loader(
+        image_root=opt.train_image_root,
+        label_json_path=opt.train_label_json,
+        batch_size=opt.batch_size,
+        image_size=opt_get(opt, "image_size", 224),
+        load_size=opt_get(opt, "load_size", 256),
+        num_workers=opt_get(opt, "num_workers", 4),
+        pin_memory=opt_get(opt, "pin_memory", False),
+        persistent_workers=opt_get(opt, "persistent_workers", False),
+        no_crop=opt_get(opt, "no_crop", False),
+    )
+
     val_dataset, val_loader = build_test_loader(
         image_root=opt.val_image_root,
         label_json_path=opt.val_label_json,
@@ -60,7 +62,11 @@ def build_dataloaders(opt):
         no_crop=opt_get(opt, "no_crop", False),
     )
 
-    return train_dataset, train_loader, val_dataset, val_loader
+    return (
+        train_dataset, train_loader,
+        train_eval_dataset, train_eval_loader,
+        val_dataset, val_loader,
+    )
 
 
 def build_model(opt, device: str) -> CLIPFDModel:
@@ -99,9 +105,7 @@ def build_trainer(opt, model, save_dir: Path, device: str) -> Trainer:
 
 
 def choose_best_metric(val_metrics: dict) -> str:
-    """
-    优先用更有区分力的指标
-    """
+    # 平均AUC水平
     if "macro_auc" in val_metrics and val_metrics["macro_auc"] == val_metrics["macro_auc"]:
         return "macro_auc"
     if "tri_acc" in val_metrics:
@@ -132,7 +136,7 @@ def print_metrics(prefix: str, metrics: dict):
             parts.append(f"{k}={v}")
     print(" | ".join(parts))
 
-
+# 将每个epoch计算得到的评估指标记录到tensorboard的日志中
 def log_metrics(writer, split: str, metrics: dict, epoch: int):
     if writer is None:
         return
@@ -157,10 +161,10 @@ def main():
     print(f"save_dir : {save_dir}")
     print("=" * 80)
 
-    # 1. dataloaders
+    # 1. 数据集实例和数据加载实例
     print("=" * 80)
     print("加载数据导入模块")
-    train_dataset, train_loader, val_dataset, val_loader = build_dataloaders(opt)
+    train_dataset, train_loader,train_eval_dataset, train_eval_loader,val_dataset, val_loader = build_dataloaders(opt)
 
     print(f"Train dataset size : {len(train_dataset)}")
     print(f"Val dataset size   : {len(val_dataset)}")
@@ -169,14 +173,14 @@ def main():
     print("数据导入模块加载完成")
     print("=" * 80)
 
-    # 2. model
+    # 2. 构建模型实例
     print("=" * 80)
     print("开始加载模型")
     model = build_model(opt, device)
     print("模型加载完成")
     print("=" * 80)
 
-    # 3. trainer
+    # 3. 构建训练加载器实例
     print("=" * 80)
     print("开始加载训练器")
     trainer = build_trainer(opt, model, save_dir, device)
@@ -184,14 +188,14 @@ def main():
     print("=" * 80)
 
 
-    # 4. tensorboard
+    # 4. 训练过程中实时监控
     train_writer = SummaryWriter(str(save_dir / "tensorboard" / "train")) if SummaryWriter else None
     val_writer = SummaryWriter(str(save_dir / "tensorboard" / "val")) if SummaryWriter else None
 
-    # 5. visualizer
+    # 5. 可视化实例
     visualizer = TrainingVisualizer(save_root=str(save_dir / "training_vis")) if TrainingVisualizer else None
 
-    # 6. resume
+    # 6. 在检查点恢复训练
     start_epoch = 0
     resume_path = opt_get(opt, "resume_path", None)
     if resume_path:
@@ -199,7 +203,7 @@ def main():
         start_epoch, _ = trainer.load_checkpoint(resume_path, strict=True)
         start_epoch += 1
 
-    # 7. main loop
+    # 7. 训练实施
     epochs = opt_get(opt, "epochs", opt_get(opt, "niter", 20))
     save_epoch_freq = opt_get(opt, "save_epoch_freq", 1)
 
@@ -209,20 +213,77 @@ def main():
     for epoch in range(start_epoch, epochs):
         print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
 
-        train_metrics = trainer.train_one_epoch(
+        # 这里的顺序一定要保持：
+        # 1) 先真正训练
+        # 2) 再用 eval 模式评估 train set
+        # 3) 再评估 val set
+        train_loop_metrics = trainer.train_one_epoch(
             train_loader,
             epoch=epoch,
             log_interval=opt_get(opt, "log_interval", 20),
         )
-        print_metrics("[Train]", train_metrics)
-        log_metrics(train_writer, "train", train_metrics, epoch)
+        print_metrics("[TrainLoop]", train_loop_metrics)
+        log_metrics(train_writer, "train_loop", train_loop_metrics, epoch)
 
-        val_metrics = trainer.evaluate(
+        train_metrics, train_details = trainer.evaluate(
+            train_eval_loader,
+            epoch=epoch,
+            return_details=True,
+        )
+        print_metrics("[TrainEval]", train_metrics)
+        log_metrics(train_writer, "train_eval", train_metrics, epoch)
+
+        val_metrics, val_details = trainer.evaluate(
             val_loader,
             epoch=epoch,
+            return_details=True,
         )
         print_metrics("[Val]", val_metrics)
         log_metrics(val_writer, "val", val_metrics, epoch)
+
+        tri_class_names = ["真实图", "AI生成", "AI修改"]
+
+        if save_epoch_classification_artifacts is not None:
+            epoch_root = save_dir / "epoch_reports" / f"epoch_{epoch + 1:03d}"
+
+            train_report_metrics = save_epoch_classification_artifacts(
+                save_dir=str(epoch_root / "train"),
+                tri_y_true=train_details["tri_y_true"],
+                tri_y_prob=train_details["tri_y_prob"],
+                tri_class_names=tri_class_names,
+                bin_y_true=train_details["bin_y_true"],
+                bin_y_prob=train_details["bin_y_prob"],
+            )
+
+            val_report_metrics = save_epoch_classification_artifacts(
+                save_dir=str(epoch_root / "val"),
+                tri_y_true=val_details["tri_y_true"],
+                tri_y_prob=val_details["tri_y_prob"],
+                tri_class_names=tri_class_names,
+                bin_y_true=val_details["bin_y_true"],
+                bin_y_prob=val_details["bin_y_prob"],
+            )
+
+            # 把三类准确率等数值补回metrics
+            train_metrics.update({
+                k: v for k, v in train_report_metrics.items()
+                if isinstance(v, (int, float))
+            })
+            val_metrics.update({
+                k: v for k, v in val_report_metrics.items()
+                if isinstance(v, (int, float))
+            })
+
+        if visualizer is not None:
+            vis_train_metrics = dict(train_metrics)
+            vis_train_metrics["optim_loss"] = train_loop_metrics.get("loss")
+            vis_train_metrics["lr"] = train_loop_metrics.get("lr")
+
+            visualizer.update(
+                epoch=epoch,
+                train_metrics=vis_train_metrics,
+                val_metrics=val_metrics,
+            )
 
         if visualizer is not None:
             visualizer.update(
@@ -242,7 +303,7 @@ def main():
                 },
             )
 
-        # best 模型保存
+        # best模型保存
         if best_metric_name is None:
             best_metric_name = choose_best_metric(val_metrics)
             best_metric_value = metric_init_value(best_metric_name)
@@ -256,15 +317,14 @@ def main():
                 filename="best.pth",
                 epoch=epoch,
                 extra={
-                    "best_metric_name": best_metric_name,
-                    "best_metric_value": best_metric_value,
+                    "train_loop_metrics": train_loop_metrics,
                     "train_metrics": train_metrics,
                     "val_metrics": val_metrics,
-                },
+                }
             )
             print(f"[Best] Updated: {best_metric_name}={best_metric_value:.6f}")
 
-    # 8. finalize
+    # 资源清理
     if train_writer is not None:
         train_writer.close()
     if val_writer is not None:

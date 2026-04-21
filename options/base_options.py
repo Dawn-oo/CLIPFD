@@ -27,7 +27,7 @@ class BaseOptions:
         parser.add_argument("--test_label_json",type=str,default=str(dataset_root / "test_labels.json"),help="测试集图片标签文件")
 
         # ===== 数据加载参数配置 =====
-        parser.add_argument("--batch_size", type=int, default=8, help="读取图片批次大小")
+        parser.add_argument("--batch_size", type=int, default=12, help="读取图片批次大小")
         parser.add_argument("--num_workers", type=int, default=4, help="在进行数据加载时，使用的读取照片的子进程数量")
         parser.add_argument("--pin_memory", action="store_true", help="用于控制数据加载时的内存锁定功能，提高数据加载效率")
         parser.add_argument("--persistent_workers", action="store_true", help="子进程持久化，不需要每一轮训练都创建")

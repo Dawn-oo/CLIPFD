@@ -20,9 +20,7 @@ def get_device(opt) -> str:
 
 # 构建训练集和测试集两个数据集的实例对象，构建训练集和测试集两个数据加载器的实例对象
 def build_dataloaders(opt):
-    train_dataset, train_loader = build_train_loader(
-        image_root=opt.train_image_root,
-        label_json_path=opt.train_label_json,
+    common_kwargs = dict(
         batch_size=opt.batch_size,
         image_size=opt_get(opt, "image_size", 224),
         load_size=opt_get(opt, "load_size", 256),
@@ -30,43 +28,24 @@ def build_dataloaders(opt):
         pin_memory=opt_get(opt, "pin_memory", False),
         persistent_workers=opt_get(opt, "persistent_workers", False),
         no_crop=opt_get(opt, "no_crop", False),
+    )
+
+    train_dataset, train_loader = build_train_loader(
+        image_root=opt.train_image_root,
+        label_json_path=opt.train_label_json,
         no_flip=opt_get(opt, "no_flip", False),
         blur_prob=opt_get(opt, "blur_prob", 0.0),
         blur_radius=opt_get(opt, "blur_radius", (0.1, 1.5)),
         jpg_prob=opt_get(opt, "jpg_prob", 0.0),
         jpg_quality=opt_get(opt, "jpg_quality", (65, 95)),
+        **common_kwargs,
     )
 
-    # 训练集评估专用,画 trainROC
-    train_eval_dataset, train_eval_loader = build_test_loader(
-        image_root=opt.train_image_root,
-        label_json_path=opt.train_label_json,
-        batch_size=opt.batch_size,
-        image_size=opt_get(opt, "image_size", 224),
-        load_size=opt_get(opt, "load_size", 256),
-        num_workers=opt_get(opt, "num_workers", 4),
-        pin_memory=opt_get(opt, "pin_memory", False),
-        persistent_workers=opt_get(opt, "persistent_workers", False),
-        no_crop=opt_get(opt, "no_crop", False),
-    )
+    _, train_eval_loader = build_test_loader(image_root=opt.train_image_root,label_json_path=opt.train_label_json,**common_kwargs)
 
-    val_dataset, val_loader = build_test_loader(
-        image_root=opt.val_image_root,
-        label_json_path=opt.val_label_json,
-        batch_size=opt.batch_size,
-        image_size=opt_get(opt, "image_size", 224),
-        load_size=opt_get(opt, "load_size", 256),
-        num_workers=opt_get(opt, "num_workers", 4),
-        pin_memory=opt_get(opt, "pin_memory", False),
-        persistent_workers=opt_get(opt, "persistent_workers", False),
-        no_crop=opt_get(opt, "no_crop", False),
-    )
+    val_dataset, val_loader = build_test_loader(image_root=opt.val_image_root,label_json_path=opt.val_label_json,**common_kwargs)
 
-    return (
-        train_dataset, train_loader,
-        train_eval_dataset, train_eval_loader,
-        val_dataset, val_loader,
-    )
+    return train_dataset, train_loader, train_eval_loader, val_dataset, val_loader
 
 
 def build_model(opt, device: str) -> CLIPFDModel:
@@ -144,6 +123,12 @@ def log_metrics(writer, split: str, metrics: dict, epoch: int):
         if isinstance(v, (int, float)):
             writer.add_scalar(f"{split}/{k}", v, epoch)
 
+def make_ckpt_extra(train_loop_metrics, train_metrics, val_metrics):
+    return {
+        "train_loop_metrics": train_loop_metrics,
+        "train_metrics": train_metrics,
+        "val_metrics": val_metrics,
+    }
 
 def main():
     print("=" * 80)
@@ -164,7 +149,7 @@ def main():
     # 1. 数据集实例和数据加载实例
     print("=" * 80)
     print("加载数据导入模块")
-    train_dataset, train_loader,train_eval_dataset, train_eval_loader,val_dataset, val_loader = build_dataloaders(opt)
+    train_dataset, train_loader, train_eval_loader, val_dataset, val_loader = build_dataloaders(opt)
 
     print(f"Train dataset size : {len(train_dataset)}")
     print(f"Val dataset size   : {len(val_dataset)}")
@@ -210,6 +195,7 @@ def main():
     best_metric_name = None
     best_metric_value = None
 
+    tri_class_names = ["真实图", "AI生成", "AI修改"]
     for epoch in range(start_epoch, epochs):
         print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
 
@@ -240,8 +226,6 @@ def main():
         )
         print_metrics("[Val]", val_metrics)
         log_metrics(val_writer, "val", val_metrics, epoch)
-
-        tri_class_names = ["真实图", "AI生成", "AI修改"]
 
         if save_epoch_classification_artifacts is not None:
             epoch_root = save_dir / "epoch_reports" / f"epoch_{epoch + 1:03d}"
@@ -285,22 +269,12 @@ def main():
                 val_metrics=val_metrics,
             )
 
-        if visualizer is not None:
-            visualizer.update(
-                epoch=epoch,
-                train_metrics=train_metrics,
-                val_metrics=val_metrics,
-            )
-
         # 周期保存
         if (epoch + 1) % save_epoch_freq == 0:
             trainer.save_checkpoint(
                 filename=f"epoch_{epoch + 1}.pth",
                 epoch=epoch,
-                extra={
-                    "train_metrics": train_metrics,
-                    "val_metrics": val_metrics,
-                },
+                extra=make_ckpt_extra(train_loop_metrics, train_metrics, val_metrics)
             )
 
         # best模型保存
@@ -316,11 +290,7 @@ def main():
             trainer.save_checkpoint(
                 filename="best.pth",
                 epoch=epoch,
-                extra={
-                    "train_loop_metrics": train_loop_metrics,
-                    "train_metrics": train_metrics,
-                    "val_metrics": val_metrics,
-                }
+                extra=make_ckpt_extra(train_loop_metrics, train_metrics, val_metrics)
             )
             print(f"[Best] Updated: {best_metric_name}={best_metric_value:.6f}")
 

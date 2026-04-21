@@ -343,67 +343,6 @@ def plot_multiclass_roc_pr(
         metrics[f"pr_auc_{k}"] = v
     return metrics
 
-
-def save_final_classification_report(
-    save_dir: str,
-    tri_y_true: Optional[np.ndarray] = None,
-    tri_y_prob: Optional[np.ndarray] = None,
-    tri_class_names: Optional[Sequence[str]] = None,
-    bin_y_true: Optional[np.ndarray] = None,
-    bin_y_prob: Optional[np.ndarray] = None,
-) -> Dict[str, float]:
-    """
-    训练结束后调用：
-    - 保存三分类 confusion matrix / ROC / PR
-    - 保存二分类 confusion matrix / ROC / PR
-    """
-    save_dir = Path(save_dir)
-    _ensure_dir(save_dir)
-    metrics = {}
-
-    if tri_y_true is not None and tri_y_prob is not None and tri_class_names is not None:
-        tri_pred = np.argmax(tri_y_prob, axis=1)
-        plot_confusion_matrix(
-            y_true=tri_y_true,
-            y_pred=tri_pred,
-            class_names=tri_class_names,
-            save_path=str(save_dir / "tri_confusion_matrix.png"),
-            normalize=True,
-            title="3-Class Confusion Matrix",
-        )
-        tri_metrics = plot_multiclass_roc_pr(
-            y_true=tri_y_true,
-            y_prob=tri_y_prob,
-            class_names=tri_class_names,
-            save_dir=str(save_dir),
-            prefix="tri",
-        )
-        metrics.update(tri_metrics)
-
-    if bin_y_true is not None and bin_y_prob is not None:
-        bin_pred = (bin_y_prob >= 0.5).astype(np.int64)
-        plot_confusion_matrix(
-            y_true=bin_y_true,
-            y_pred=bin_pred,
-            class_names=["negative", "positive"],
-            save_path=str(save_dir / "bin_confusion_matrix.png"),
-            normalize=True,
-            title="Binary Confusion Matrix",
-        )
-        bin_metrics = plot_binary_roc_pr(
-            y_true=bin_y_true,
-            y_score=bin_y_prob,
-            save_dir=str(save_dir),
-            prefix="bin",
-        )
-        metrics["binary_auc"] = bin_metrics["auc"]
-        metrics["binary_pr_auc"] = bin_metrics["pr_auc"]
-
-    with open(save_dir / "final_eval_metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, ensure_ascii=False, indent=2)
-
-    return metrics
-
 def compute_per_class_accuracy(
     y_true: np.ndarray,
     y_pred: np.ndarray,

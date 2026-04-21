@@ -6,7 +6,8 @@ from data_deal import build_train_loader, build_test_loader
 from models.assemble_model import CLIPFDModel
 from options.train_options import TrainOptions
 from trainer.trainer import Trainer
-from utils.training_monitor import TrainingVisualizer,save_epoch_classification_artifacts
+from utils.training_monitor import TrainingVisualizer
+from utils.eval_report import EvaluationReporter
 
 
 # 用于从配置对象中安全地提取参数值
@@ -174,11 +175,12 @@ def main():
 
 
     # 4. 训练过程中实时监控
-    train_writer = SummaryWriter(str(save_dir / "tensorboard" / "train")) if SummaryWriter else None
-    val_writer = SummaryWriter(str(save_dir / "tensorboard" / "val")) if SummaryWriter else None
+    train_writer = SummaryWriter(str(save_dir / "tensorboard" / "train"))
+    val_writer = SummaryWriter(str(save_dir / "tensorboard" / "val"))
 
-    # 5. 可视化实例
+    # 5. 可视化实例和评估实例构建
     visualizer = TrainingVisualizer(save_root=str(save_dir / "training_vis")) if TrainingVisualizer else None
+    reporter = EvaluationReporter(save_root=str(save_dir / "eval_reports"),tri_class_names=["真实图", "AI生成", "AI修改"],aux_binary_class_names=("真实图", "AI介入"))
 
     # 6. 在检查点恢复训练
     start_epoch = 0
@@ -195,7 +197,6 @@ def main():
     best_metric_name = None
     best_metric_value = None
 
-    tri_class_names = ["真实图", "AI生成", "AI修改"]
     for epoch in range(start_epoch, epochs):
         print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
 
@@ -203,60 +204,44 @@ def main():
         # 1) 先真正训练
         # 2) 再用 eval 模式评估 train set
         # 3) 再评估 val set
-        train_loop_metrics = trainer.train_one_epoch(
-            train_loader,
-            epoch=epoch,
-            log_interval=opt_get(opt, "log_interval", 20),
-        )
+        train_loop_metrics = trainer.train_one_epoch(train_loader,epoch=epoch,log_interval=opt_get(opt, "log_interval", 20))
         print_metrics("[TrainLoop]", train_loop_metrics)
         log_metrics(train_writer, "train_loop", train_loop_metrics, epoch)
 
-        train_metrics, train_details = trainer.evaluate(
-            train_eval_loader,
-            epoch=epoch,
-            return_details=True,
-        )
+        train_metrics, train_details = trainer.evaluate(train_eval_loader,epoch=epoch,return_details=True)
         print_metrics("[TrainEval]", train_metrics)
         log_metrics(train_writer, "train_eval", train_metrics, epoch)
 
-        val_metrics, val_details = trainer.evaluate(
-            val_loader,
-            epoch=epoch,
-            return_details=True,
-        )
+        val_metrics, val_details = trainer.evaluate(val_loader,epoch=epoch,return_details=True,)
         print_metrics("[Val]", val_metrics)
         log_metrics(val_writer, "val", val_metrics, epoch)
 
-        if save_epoch_classification_artifacts is not None:
-            epoch_root = save_dir / "epoch_reports" / f"epoch_{epoch + 1:03d}"
+        train_report_metrics = reporter.save_epoch_report(
+            split="train",
+            epoch=epoch + 1,
+            tri_y_true=train_details["tri_y_true"],
+            tri_y_prob=train_details["tri_y_prob"],
+            bin_y_true=train_details["bin_y_true"],
+            bin_y_prob=train_details["bin_y_prob"],
+        )
 
-            train_report_metrics = save_epoch_classification_artifacts(
-                save_dir=str(epoch_root / "train"),
-                tri_y_true=train_details["tri_y_true"],
-                tri_y_prob=train_details["tri_y_prob"],
-                tri_class_names=tri_class_names,
-                bin_y_true=train_details["bin_y_true"],
-                bin_y_prob=train_details["bin_y_prob"],
-            )
+        val_report_metrics = reporter.save_epoch_report(
+            split="val",
+            epoch=epoch + 1,
+            tri_y_true=val_details["tri_y_true"],
+            tri_y_prob=val_details["tri_y_prob"],
+            bin_y_true=val_details["bin_y_true"],
+            bin_y_prob=val_details["bin_y_prob"],
+        )
 
-            val_report_metrics = save_epoch_classification_artifacts(
-                save_dir=str(epoch_root / "val"),
-                tri_y_true=val_details["tri_y_true"],
-                tri_y_prob=val_details["tri_y_prob"],
-                tri_class_names=tri_class_names,
-                bin_y_true=val_details["bin_y_true"],
-                bin_y_prob=val_details["bin_y_prob"],
-            )
-
-            # 把三类准确率等数值补回metrics
-            train_metrics.update({
-                k: v for k, v in train_report_metrics.items()
-                if isinstance(v, (int, float))
-            })
-            val_metrics.update({
-                k: v for k, v in val_report_metrics.items()
-                if isinstance(v, (int, float))
-            })
+        train_metrics.update({
+            k: v for k, v in train_report_metrics.items()
+            if isinstance(v, (int, float))
+        })
+        val_metrics.update({
+            k: v for k, v in val_report_metrics.items()
+            if isinstance(v, (int, float))
+        })
 
         if visualizer is not None:
             vis_train_metrics = dict(train_metrics)
@@ -294,6 +279,16 @@ def main():
             )
             print(f"[Best] Updated: {best_metric_name}={best_metric_value:.6f}")
 
+        reporter.save_best_report(
+            split="val",
+            epoch=epoch + 1,
+            best_metric_name=best_metric_name,
+            best_metric_value=best_metric_value,
+            tri_y_true=val_details["tri_y_true"],
+            tri_y_prob=val_details["tri_y_prob"],
+            bin_y_true=val_details["bin_y_true"],
+            bin_y_prob=val_details["bin_y_prob"],
+        )
     # 资源清理
     if train_writer is not None:
         train_writer.close()
@@ -301,6 +296,7 @@ def main():
         val_writer.close()
     if visualizer is not None:
         visualizer.finalize()
+    reporter.finalize()
 
     print("\nTraining finished.")
 

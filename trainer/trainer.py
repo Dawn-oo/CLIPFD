@@ -220,7 +220,6 @@ class Trainer:
         return result
 
     @torch.no_grad()
-    @torch.no_grad()
     def evaluate(self, loader, epoch: int = 0, return_details: bool = False):
         self.model.eval()
 

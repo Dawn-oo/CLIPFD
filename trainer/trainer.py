@@ -14,10 +14,6 @@ class Trainer:
     - batch["image"]        : [B, 3, H, W]
     - batch["binary_label"] : [B]，float，0/1
     - batch["multi_label"]  : [B]，long，0/1/2
-
-    模型输出：
-    - outputs["logits"]         : [B, 3]
-    - outputs["global_logits"]  : [B, 1]，可选
     """
 
     def __init__(
@@ -195,7 +191,7 @@ class Trainer:
             # 按间隔打印训练进度
             if step % log_interval == 0:
                 print(
-                    f"[Train] epoch={epoch} step={step}/{len(loader)} "
+                    f"[Train] epoch={epoch+1} step={step}/{len(loader)} "
                     f"loss={loss_dict['loss'].item():.4f} "
                     f"tri_acc={metrics.get('tri_acc', 0.0):.4f} "
                     f"bin_acc={metrics.get('bin_acc', 0.0):.4f}"

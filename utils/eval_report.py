@@ -16,6 +16,9 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import label_binarize
 
+def setup_matplotlib_chinese():
+    plt.rcParams['font.sans-serif'] = ['SimHei']
+    plt.rcParams['axes.unicode_minus'] = False
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -34,6 +37,7 @@ class EvaluationReporter:
     history: Dict[str, List[Dict]] = field(default_factory=dict)
 
     def __post_init__(self):
+        setup_matplotlib_chinese()
         self.save_dir = Path(self.save_root)
         _ensure_dir(self.save_dir)
         self.history = {"train": [], "val": []}
@@ -50,12 +54,8 @@ class EvaluationReporter:
         bin_y_true: Optional[np.ndarray] = None,
         bin_y_prob: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
-        """
-        每个 epoch 调用一次：
-        - 保存该 epoch 的 metrics.json
-        - 将本轮标量指标写入 history
-        - 不保存 confusion matrix
-        """
+        """每个 epoch 调用一次：保存该epoch的metrics.json、将本轮标量指标写入history、不保存confusion matrix"""
+
         base_dir = self.save_dir / split / f"epoch_{epoch:03d}"
         _ensure_dir(base_dir)
 

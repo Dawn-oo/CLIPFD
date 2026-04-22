@@ -6,9 +6,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-
+from .eval_report import setup_matplotlib_chinese
 import matplotlib.pyplot as plt
 
+setup_matplotlib_chinese()
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -100,6 +101,7 @@ class TrainingVisualizer:
             writer = csv.DictWriter(f, fieldnames=columns)
             writer.writeheader()
             writer.writerows(self.records)
+        print("本轮训练数据指标成功保存为CSV文件")
 
     def save_history_json(self) -> None:
         if not self.records:

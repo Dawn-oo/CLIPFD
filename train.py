@@ -8,7 +8,7 @@ from options.train_options import TrainOptions
 from trainer.trainer import Trainer
 from utils.training_monitor import TrainingVisualizer
 from utils.eval_report import EvaluationReporter
-
+import matplotlib.pyplot as plt
 
 # 用于从配置对象中安全地提取参数值
 def opt_get(opt, name, default):
@@ -136,6 +136,7 @@ def main():
     print("开始加载训练阶段参数配置...")
     opt = TrainOptions().parse()
     device = get_device(opt)
+    opt.use_global_aux_head = True
     print("训练阶段参数配置加载完成")
     save_dir = Path(opt.checkpoints_dir) / opt.name
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -182,7 +183,7 @@ def main():
     visualizer = TrainingVisualizer(save_root=str(save_dir / "training_vis")) if TrainingVisualizer else None
     reporter = EvaluationReporter(save_root=str(save_dir / "eval_reports"),tri_class_names=["真实图", "AI生成", "AI修改"],aux_binary_class_names=("真实图", "AI介入"))
 
-    # 6. 在检查点恢复训练
+    # 6. 检查点
     start_epoch = 0
     resume_path = opt_get(opt, "resume_path", None)
     if resume_path:
@@ -200,10 +201,6 @@ def main():
     for epoch in range(start_epoch, epochs):
         print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
 
-        # 这里的顺序一定要保持：
-        # 1) 先真正训练
-        # 2) 再用 eval 模式评估 train set
-        # 3) 再评估 val set
         train_loop_metrics = trainer.train_one_epoch(train_loader,epoch=epoch,log_interval=opt_get(opt, "log_interval", 20))
         print_metrics("[TrainLoop]", train_loop_metrics)
         log_metrics(train_writer, "train_loop", train_loop_metrics, epoch)

@@ -8,7 +8,7 @@ from options.train_options import TrainOptions
 from trainer.trainer import Trainer
 from utils.training_monitor import TrainingVisualizer
 from utils.eval_report import EvaluationReporter
-import matplotlib.pyplot as plt
+
 
 # 用于从配置对象中安全地提取参数值
 def opt_get(opt, name, default):

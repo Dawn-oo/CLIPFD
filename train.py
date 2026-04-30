@@ -8,7 +8,7 @@ from options.train_options import TrainOptions
 from trainer.trainer import Trainer
 from utils.training_monitor import TrainingVisualizer
 from utils.eval_report import EvaluationReporter
-
+import csv
 
 def opt_get(opt, name, default):
     return getattr(opt, name, default)
@@ -79,6 +79,8 @@ def build_trainer(opt, model, save_dir: Path, device: str) -> Trainer:
         aux_loss_weight_end=opt_get(opt, "aux_loss_weight_end", 0.05),
         aux_weight_schedule=opt_get(opt, "aux_weight_schedule", "cosine_decay"),
         total_epochs=opt_get(opt, "epochs", opt_get(opt, "niter", 20)),
+        scheduler_type=opt_get(opt, "scheduler_type", "cosine"),
+        min_lr=opt_get(opt, "min_lr", 1e-6),
         label_smoothing=opt_get(opt, "label_smoothing", 0.0),
         use_amp=opt_get(opt, "use_amp", False),
         grad_clip_norm=opt_get(opt, "grad_clip_norm", 1.0),
@@ -134,6 +136,138 @@ def make_ckpt_extra(train_loop_metrics, train_metrics, val_metrics):
         "val_metrics": val_metrics,
     }
 
+def save_prediction_csv(
+    save_path: Path,
+    details: dict,
+    tri_class_names=None,
+    binary_class_names=None,
+):
+    """
+    输出内容：
+    - 图片名称 / 图片路径
+    - 二分类真实标签、预测标签、AI概率
+    - 三分类真实标签、预测标签、三类概率
+    """
+    if tri_class_names is None:
+        tri_class_names = ["真实图", "AI生成", "AI修改"]
+
+    if binary_class_names is None:
+        binary_class_names = ["真实图", "AI介入"]
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    sample_ids = details.get("sample_ids", [])
+    image_paths = details.get("image_paths", [])
+
+    tri_y_true = details.get("tri_y_true", None)
+    tri_y_pred = details.get("tri_y_pred", None)
+    tri_y_prob = details.get("tri_y_prob", None)
+
+    bin_y_true = details.get("bin_y_true", None)
+    bin_y_pred = details.get("bin_y_pred", None)
+    bin_y_prob = details.get("bin_y_prob", None)
+
+    if image_paths:
+        n = len(image_paths)
+    elif tri_y_true is not None:
+        n = len(tri_y_true)
+    else:
+        n = 0
+
+    fieldnames = [
+        "sample_id",
+        "image_name",
+        "image_path",
+
+        "binary_true_label",
+        "binary_true_name",
+        "binary_pred_label",
+        "binary_pred_name",
+        "binary_ai_prob",
+
+        "tri_true_label",
+        "tri_true_name",
+        "tri_pred_label",
+        "tri_pred_name",
+        "tri_prob_real",
+        "tri_prob_ai_generate",
+        "tri_prob_ai_edit",
+    ]
+
+    with open(save_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for i in range(n):
+            image_path = image_paths[i] if i < len(image_paths) else ""
+            image_name = Path(image_path).name if image_path else ""
+
+            if i < len(sample_ids):
+                sample_id = sample_ids[i]
+            elif image_path:
+                sample_id = Path(image_path).stem
+            else:
+                sample_id = ""
+
+            row = {
+                "sample_id": sample_id,
+                "image_name": image_name,
+                "image_path": image_path,
+
+                "binary_true_label": "",
+                "binary_true_name": "",
+                "binary_pred_label": "",
+                "binary_pred_name": "",
+                "binary_ai_prob": "",
+
+                "tri_true_label": "",
+                "tri_true_name": "",
+                "tri_pred_label": "",
+                "tri_pred_name": "",
+                "tri_prob_real": "",
+                "tri_prob_ai_generate": "",
+                "tri_prob_ai_edit": "",
+            }
+
+            # 二分类真实标签
+            if bin_y_true is not None:
+                true_bin = int(bin_y_true[i])
+                row["binary_true_label"] = true_bin
+                row["binary_true_name"] = binary_class_names[true_bin]
+
+            # 二分类预测标签
+            if bin_y_pred is not None:
+                pred_bin = int(bin_y_pred[i])
+                row["binary_pred_label"] = pred_bin
+                row["binary_pred_name"] = binary_class_names[pred_bin]
+
+            # 二分类 AI 概率
+            if bin_y_prob is not None:
+                row["binary_ai_prob"] = float(bin_y_prob[i])
+
+            # 三分类真实标签
+            if tri_y_true is not None:
+                true_tri = int(tri_y_true[i])
+                row["tri_true_label"] = true_tri
+                row["tri_true_name"] = tri_class_names[true_tri]
+
+            # 三分类预测标签
+            if tri_y_pred is not None:
+                pred_tri = int(tri_y_pred[i])
+                row["tri_pred_label"] = pred_tri
+                row["tri_pred_name"] = tri_class_names[pred_tri]
+
+            # 三分类概率
+            if tri_y_prob is not None:
+                row["tri_prob_real"] = float(tri_y_prob[i][0])
+                row["tri_prob_ai_generate"] = float(tri_y_prob[i][1])
+                row["tri_prob_ai_edit"] = float(tri_y_prob[i][2])
+
+            writer.writerow(row)
+
+    print(f"Prediction CSV saved to: {save_path}")
+
 def main():
     print("=" * 80)
     print("开始加载训练阶段参数配置...")
@@ -146,7 +280,7 @@ def main():
     print("参数配置文件保存成功")
 
     print("=" * 80)
-    print("Start training")
+    print("训练开始")
     print(f"device   : {device}")
     print(f"save_dir : {save_dir}")
     print("=" * 80)
@@ -156,10 +290,10 @@ def main():
     print("加载数据导入模块")
     train_dataset, train_loader, train_eval_loader, val_dataset, val_loader = build_dataloaders(opt)
 
-    print(f"Train dataset size : {len(train_dataset)}")
-    print(f"Val dataset size   : {len(val_dataset)}")
-    print(f"Train steps/epoch  : {len(train_loader)}")
-    print(f"Val steps          : {len(val_loader)}")
+    print(f"训练集大小 : {len(train_dataset)}")
+    print(f"验证集大小 : {len(val_dataset)}")
+    print(f"训练集加载批次  : {len(train_loader)}")
+    print(f"验证集加载批次  : {len(val_loader)}")
     print("数据导入模块加载完成")
     print("=" * 80)
 
@@ -205,7 +339,10 @@ def main():
         print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
 
         trainer.update_aux_loss_weight(epoch)
-        print(f"[辅助二分类损失参数权重] epoch={epoch + 1}, aux_loss_weight={trainer.aux_loss_weight:.6f}")
+        print(f"[辅助二分类损失参数权重] 训练批次={epoch + 1}, 二分类辅助损失权重 = {trainer.aux_loss_weight:.6f}")
+
+        current_lr = trainer.update_learning_rate(epoch)
+        print(f"[学习率参数] epoch={epoch + 1}, lr={current_lr:.8f}")
 
         train_loop_metrics = trainer.train_one_epoch(train_loader,epoch=epoch,log_interval=opt_get(opt, "log_interval", 20))
         print_metrics("[TrainLoop]", train_loop_metrics)
@@ -275,23 +412,40 @@ def main():
 
         if is_better(best_metric_name, current_metric_value, best_metric_value):
             best_metric_value = current_metric_value
+
             trainer.save_checkpoint(
                 filename="best.pth",
                 epoch=epoch,
                 extra=make_ckpt_extra(train_loop_metrics, train_metrics, val_metrics)
             )
+
+            reporter.save_best_report(
+                split="val",
+                epoch=epoch + 1,
+                best_metric_name=best_metric_name,
+                best_metric_value=best_metric_value,
+                tri_y_true=val_details["tri_y_true"],
+                tri_y_prob=val_details["tri_y_prob"],
+                bin_y_true=val_details["bin_y_true"],
+                bin_y_prob=val_details["bin_y_prob"],
+            )
+
+            save_prediction_csv(
+                save_path=save_dir / "prediction_csv" / "best_val_predictions.csv",
+                details=val_details,
+                tri_class_names=["真实图", "AI生成", "AI修改"],
+                binary_class_names=["真实图", "AI介入"],
+            )
+
+            save_prediction_csv(
+                save_path=save_dir / "prediction_csv" / "best_train_predictions.csv",
+                details=train_details,
+                tri_class_names=["真实图", "AI生成", "AI修改"],
+                binary_class_names=["真实图", "AI介入"],
+            )
+
             print(f"[Best] Updated: {best_metric_name}={best_metric_value:.6f}")
 
-        reporter.save_best_report(
-            split="val",
-            epoch=epoch + 1,
-            best_metric_name=best_metric_name,
-            best_metric_value=best_metric_value,
-            tri_y_true=val_details["tri_y_true"],
-            tri_y_prob=val_details["tri_y_prob"],
-            bin_y_true=val_details["bin_y_true"],
-            bin_y_prob=val_details["bin_y_prob"],
-        )
     # 资源清理
     if train_writer is not None:
         train_writer.close()

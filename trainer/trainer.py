@@ -26,7 +26,9 @@ class Trainer:
             aux_loss_weight: float = 0.3,
             aux_loss_weight_end: float = 0.05,
             aux_weight_schedule: str = "cosine_decay",
-            total_epochs: int = 10,
+            total_epochs: int = 30,
+            scheduler_type: str = "cosine",
+            min_lr: float = 1e-6,
             label_smoothing: float = 0.0,
             use_amp: bool = True,
             grad_clip_norm: Optional[float] = None,
@@ -56,6 +58,9 @@ class Trainer:
         self.grad_clip_norm = grad_clip_norm
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.lr = lr
+        self.scheduler_type = scheduler_type
+        self.min_lr = min_lr
 
         # 取到能够更新的参数
         params = [p for p in self.model.parameters() if p.requires_grad]
@@ -119,6 +124,35 @@ class Trainer:
 
         else:
             raise ValueError(f"Unsupported aux_weight_schedule: {self.aux_weight_schedule}")
+
+    def update_learning_rate(self, epoch: int):
+        """
+        根据 epoch 动态更新学习率。
+
+        支持：
+        - constant：固定学习率
+        - cosine：余弦退火，从 self.lr 衰减到 self.min_lr
+        """
+        if self.scheduler_type == "constant":
+            current_lr = self.lr
+
+        elif self.scheduler_type == "cosine":
+            import math
+
+            if self.total_epochs <= 1:
+                current_lr = self.min_lr
+            else:
+                progress = epoch / (self.total_epochs - 1)
+                factor = 0.5 * (1.0 + math.cos(math.pi * progress))
+                current_lr = self.min_lr + (self.lr - self.min_lr) * factor
+
+        else:
+            raise ValueError(f"Unsupported scheduler_type: {self.scheduler_type}")
+
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = current_lr
+
+        return current_lr
 
     def compute_losses(self, outputs: Dict, batch: Dict) -> Dict[str, torch.Tensor]:
         if "logits" not in outputs:
@@ -268,6 +302,9 @@ class Trainer:
         all_bin_probs = []
         all_bin_targets = []
 
+        all_sample_ids = []
+        all_image_paths = []
+
         for batch in loader:
             batch = self._move_batch_to_device(batch)
 
@@ -295,6 +332,12 @@ class Trainer:
 
             all_tri_probs.append(tri_probs.detach().cpu())
             all_tri_targets.append(tri_targets.detach().cpu())
+
+            if "sample_id" in batch:
+                all_sample_ids.extend(list(batch["sample_id"]))
+
+            if "image_path" in batch:
+                all_image_paths.extend(list(batch["image_path"]))
 
             if "global_logits" in outputs and "binary_label" in batch:
                 g = outputs["global_logits"]
@@ -357,14 +400,28 @@ class Trainer:
         if not return_details:
             return result
 
+        tri_y_pred_np = None
+        bin_y_pred_np = None
+
+        if tri_probs_np is not None:
+            tri_y_pred_np = np.argmax(tri_probs_np, axis=1)
+
+        if bin_probs_np is not None:
+            bin_y_pred_np = (bin_probs_np >= 0.5).astype(np.int64)
+
         details = {
+            "sample_ids": all_sample_ids,
+            "image_paths": all_image_paths,
+
             "tri_y_true": tri_targets_np,
             "tri_y_prob": tri_probs_np,
+            "tri_y_pred": tri_y_pred_np,
+
             "bin_y_true": bin_targets_np,
             "bin_y_prob": bin_probs_np,
+            "bin_y_pred": bin_y_pred_np,
         }
         return result, details
-
     @torch.no_grad()
     def predict(self, loader):
         self.model.eval()

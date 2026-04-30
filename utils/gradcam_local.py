@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -64,20 +65,41 @@ def cam_to_color(cam_2d: np.ndarray) -> np.ndarray:
     return (color * 255).astype(np.uint8)
 
 
-def overlay_cam_on_image(img_tensor, cam_tensor, mean, std, alpha=0.45):
+def overlay_cam_on_image(
+    img_tensor,
+    cam_tensor,
+    mean,
+    std,
+    alpha=0.35,
+    use_cam_alpha=True,
+    brightness=1.0,
+):
     """
     img_tensor: [3, H, W]
     cam_tensor: [1, H, W]
     return: PIL.Image
+
+    use_cam_alpha=True 时：
+    - CAM 高的区域叠加强
+    - CAM 低的区域基本保持原图
+    这样不会让整张图整体变暗。
     """
     img = denormalize(img_tensor, mean, std).detach().cpu()
     img = img.clamp(0, 1).permute(1, 2, 0).numpy()
-    img = (img * 255).astype(np.uint8)
+    img = (img * 255.0 * brightness).clip(0, 255).astype(np.float32)
 
     cam = cam_tensor.squeeze(0).detach().cpu().numpy()
-    heatmap = cam_to_color(cam)
+    cam = np.clip(cam.astype(np.float32), 0, 1)
 
-    overlay = ((1 - alpha) * img + alpha * heatmap).clip(0, 255).astype(np.uint8)
+    heatmap = cam_to_color(cam).astype(np.float32)
+
+    if use_cam_alpha:
+        alpha_map = alpha * cam[..., None]
+        overlay = (1 - alpha_map) * img + alpha_map * heatmap
+    else:
+        overlay = (1 - alpha) * img + alpha * heatmap
+
+    overlay = overlay.clip(0, 255).astype(np.uint8)
     return Image.fromarray(overlay)
 
 
@@ -100,6 +122,8 @@ def build_model_and_loader():
         gn_groups=getattr(opt, "gn_groups", 8),
         fusion_dropout=getattr(opt, "fusion_dropout", 0.1),
         use_global_aux_head=True,
+        use_global_adapter=getattr(opt, "use_global_adapter", True),
+        global_adapter_dropout=getattr(opt, "global_adapter_dropout", 0.1),
     ).to(device)
 
     ckpt = torch.load(CKPT_PATH, map_location=device)
@@ -189,14 +213,20 @@ def main():
                 cam_tensor=cam[i],
                 mean=MEAN,
                 std=STD,
-                alpha=0.45,
+                alpha=0.35,
+                use_cam_alpha=True,
+                brightness=1.05,
             )
 
-            out_path = save_dir / f"cam_{saved:03d}_pred{int(pred_class[i].item())}.png"
+            orig_path = Path(batch["image_path"][i])
+            out_path = save_dir / f"{orig_path.stem}.png"
+
             overlay_img.save(out_path)
             saved += 1
 
+
     cam_hook.close()
+
     print(f"Saved {saved} CAM images to: {save_dir}")
 
 

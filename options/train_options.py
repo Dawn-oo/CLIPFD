@@ -6,7 +6,7 @@ class TrainOptions(BaseOptions):
         parser = BaseOptions.initialize(self, parser)
 
         # ===== 训练参数配置 =====
-        parser.add_argument("--epochs", type=int, default=10, help="总训练轮次，默认15轮")
+        parser.add_argument("--epochs", type=int, default=12, help="总训练轮次，默认15轮")
         parser.add_argument("--lr", type=float, default=1e-4, help="学习率")
         parser.add_argument("--weight_decay", type=float, default=1e-4, help="权重衰减系数，L2正则化")
         parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "sgd"])
@@ -18,6 +18,8 @@ class TrainOptions(BaseOptions):
         parser.add_argument("--save_epoch_freq", type=int, default=1, help="每隔多少个训练轮次保留一个检查点")
         parser.add_argument("--aux_loss_weight_end",type=float,default=0.05,help="辅助二分类损失权重在训练结束时的目标值")
         parser.add_argument("--aux_weight_schedule",type=str,default="cosine_decay",choices=["constant", "cosine_decay"],help="辅助损失权重调度方式")
+        parser.add_argument("--scheduler_type",type=str,default="cosine",choices=["constant", "cosine"],help="学习率调度方式：constant表示固定学习率，cosine表示余弦退火")
+        parser.add_argument("--min_lr",type=float,default=1e-6,help="余弦退火学习率的最小值")
 
         # ===== 训练阶段图像处理配置参数 =====
         parser.add_argument("--blur_prob", type=float, default=0.1, help="对输入图像应用高斯模糊增强的概率")

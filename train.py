@@ -62,6 +62,8 @@ def build_model(opt, device: str) -> CLIPFDModel:
         gn_groups=opt_get(opt, "gn_groups", 8),
         fusion_dropout=opt_get(opt, "fusion_dropout", 0.1),
         use_global_aux_head=opt_get(opt, "use_global_aux_head", True),
+        use_global_adapter=opt_get(opt, "use_global_adapter", True),
+        global_adapter_dropout=opt_get(opt, "global_adapter_dropout", 0.1),
     )
     return model
 

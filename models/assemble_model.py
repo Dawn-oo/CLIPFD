@@ -5,6 +5,7 @@ from .orign_CLIP_model.feature_extract import FeatureExtractor
 from .branches.local_branch import LocalPatchBranch
 from .heads.distinct_head import ClassifierHead
 from .fusion.fusion import FeatureFusion
+from .global_adapter import GlobalAdapter
 
 
 class CLIPFDModel(nn.Module):
@@ -30,6 +31,8 @@ class CLIPFDModel(nn.Module):
         gn_groups: int = 8,
         fusion_dropout: float = 0.1,
         use_global_aux_head: bool = True,
+        use_global_adapter: bool = True,
+        global_adapter_dropout: float = 0.1,
     ):
         """
         :param backbone_name: 使用的主干模型名称
@@ -56,6 +59,16 @@ class CLIPFDModel(nn.Module):
             device=device,
         )
         self.preprocess = getattr(self.feature_extractor, "preprocess", None)
+
+        # 补充 全局特征适配层
+        self.use_global_adapter = use_global_adapter
+        if self.use_global_adapter:
+            self.global_adapter = GlobalAdapter(
+                feat_dim=self.feature_extractor.global_dim,  # 768
+                dropout=global_adapter_dropout,
+            )
+        else:
+            self.global_adapter = nn.Identity()
 
         # 2. 全局辅助头
         self.use_global_aux_head = use_global_aux_head
@@ -104,8 +117,9 @@ class CLIPFDModel(nn.Module):
 
         # 1. 提特征
         feat_out = self.feature_extractor(x)
-        global_feat = feat_out["global_feat"].float()    # [B, 768]
-        patch_tokens = feat_out["patch_tokens"].float()      # [B, N, 1024]
+        global_feat_raw = feat_out["global_feat"].float()  # [B, 768]
+        global_feat = self.global_adapter(global_feat_raw)  # [B, 768]
+        patch_tokens = feat_out["patch_tokens"].float()  # [B, N, 1024]
 
         # 2. 局部分支
         local_out = self.local_branch(patch_tokens)
@@ -125,6 +139,7 @@ class CLIPFDModel(nn.Module):
             outputs["global_logits"] = self.global_head(global_feat)["logits"]  # [B, 1]
 
         if return_features:
+            outputs["global_feat_raw"] = global_feat_raw
             outputs["global_feat"] = global_feat
             outputs["local_feat"] = local_feat
             outputs["fused_feat"] = fused_feat

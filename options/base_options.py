@@ -55,6 +55,9 @@ class BaseOptions:
         parser.add_argument("--block_dropout", type=float, default=0.0, help="局部block内部使用的dropout比例，默认不使用")
         parser.add_argument("--gn_groups", type=int, default=8, help="把通道分成多少组来做归一化")
         parser.add_argument("--fusion_dropout", type=float, default=0.1, help="融合模块里的dropout比例")
+        parser.add_argument("--use_global_adapter", action="store_true", default=True,help="是否在全局特征后增加共享适配层")
+        parser.add_argument("--disable_global_adapter", action="store_false", dest="use_global_adapter",help="关闭全局特征适配层")
+        parser.add_argument("--global_adapter_dropout", type=float, default=0.1, help="全局适配层中的dropout比例")
 
         self.initialized = True
         return parser
@@ -66,7 +69,7 @@ class BaseOptions:
             parser = self.initialize(parser)
 
         self.parser = parser
-        return parser.parse_args() # 读取命令行的输入并将其解析为一个对象
+        return parser.parse_args()
 
     # 打印和保存相关的参数配置的方法
     def print_options(self, opt):
@@ -85,7 +88,7 @@ class BaseOptions:
 
     # 参数对象构建的总控方法
     def parse(self, print_options=True):
-        opt = self.gather_options() # 读取命令行的输入并将其解析为一个对象，并将其命名为opt
+        opt = self.gather_options() # 读取命令行的输入并将其解析为一个对象
         opt.isTrain = self.isTrain
 
         # gpu ids

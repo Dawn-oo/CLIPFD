@@ -10,7 +10,6 @@ from utils.training_monitor import TrainingVisualizer
 from utils.eval_report import EvaluationReporter
 
 
-# 用于从配置对象中安全地提取参数值
 def opt_get(opt, name, default):
     return getattr(opt, name, default)
 
@@ -19,7 +18,6 @@ def get_device(opt) -> str:
     gpu_ids = opt_get(opt, "gpu_ids", [])
     return "cuda" if len(gpu_ids) > 0 else "cpu"
 
-# 构建训练集和测试集两个数据集的实例对象，构建训练集和测试集两个数据加载器的实例对象
 def build_dataloaders(opt):
     common_kwargs = dict(
         batch_size=opt.batch_size,

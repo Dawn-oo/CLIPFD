@@ -41,7 +41,6 @@ class BaseOptions:
 
         # ===== 模型参数配置 =====
         # 模型主体参数
-        # 参数配置结合了原来的clip模型，如果有模型权重，就传入模型权重文件路径，如果没有模型权重，会根据传入的模型名称去对应的网址进行下载
         parser.add_argument("--backbone_name", type=str, default=r"E:\Project\CLIPFD\models\parameters\ViT-L-14.pt", help="模型主体参数配置文件")
         parser.add_argument("--freeze_backbone",action="store_true",default=True,help="冻结主体模型参数不做训练")
         parser.add_argument("--unfreeze_backbone",action="store_false",dest="freeze_backbone",help="不冻结模型主干参数，参与训练的更新")

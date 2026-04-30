@@ -76,6 +76,9 @@ def build_trainer(opt, model, save_dir: Path, device: str) -> Trainer:
         weight_decay=opt_get(opt, "weight_decay", 1e-4),
         optimizer_type=opt_get(opt, "optimizer", "adamw"),
         aux_loss_weight=opt_get(opt, "aux_loss_weight", 0.3),
+        aux_loss_weight_end=opt_get(opt, "aux_loss_weight_end", 0.05),
+        aux_weight_schedule=opt_get(opt, "aux_weight_schedule", "cosine_decay"),
+        total_epochs=opt_get(opt, "epochs", opt_get(opt, "niter", 20)),
         label_smoothing=opt_get(opt, "label_smoothing", 0.0),
         use_amp=opt_get(opt, "use_amp", False),
         grad_clip_norm=opt_get(opt, "grad_clip_norm", 1.0),
@@ -200,6 +203,9 @@ def main():
 
     for epoch in range(start_epoch, epochs):
         print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
+
+        trainer.update_aux_loss_weight(epoch)
+        print(f"[辅助二分类损失参数权重] epoch={epoch + 1}, aux_loss_weight={trainer.aux_loss_weight:.6f}")
 
         train_loop_metrics = trainer.train_one_epoch(train_loader,epoch=epoch,log_interval=opt_get(opt, "log_interval", 20))
         print_metrics("[TrainLoop]", train_loop_metrics)

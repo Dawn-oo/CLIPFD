@@ -17,17 +17,20 @@ class Trainer:
     """
 
     def __init__(
-        self,
-        model: nn.Module,
-        device: str = "cuda",
-        lr: float = 1e-4,
-        weight_decay: float = 1e-4,
-        optimizer_type: str = "adamw",
-        aux_loss_weight: float = 0.3,
-        label_smoothing: float = 0.0,
-        use_amp: bool = True,
-        grad_clip_norm: Optional[float] = None,
-        save_dir: str = "./checkpoints",
+            self,
+            model: nn.Module,
+            device: str = "cuda",
+            lr: float = 1e-4,
+            weight_decay: float = 1e-4,
+            optimizer_type: str = "adamw",
+            aux_loss_weight: float = 0.3,
+            aux_loss_weight_end: float = 0.05,
+            aux_weight_schedule: str = "cosine_decay",
+            total_epochs: int = 10,
+            label_smoothing: float = 0.0,
+            use_amp: bool = True,
+            grad_clip_norm: Optional[float] = None,
+            save_dir: str = "./checkpoints",
     ):
         """
         :param model: 已经组装好的模型对象
@@ -45,6 +48,10 @@ class Trainer:
         self.model = model.to(self.device)
 
         self.aux_loss_weight = aux_loss_weight
+        self.aux_loss_weight_init = aux_loss_weight
+        self.aux_loss_weight_end = aux_loss_weight_end
+        self.aux_weight_schedule = aux_weight_schedule
+        self.total_epochs = total_epochs
         self.use_amp = use_amp and self.device.type == "cuda"
         self.grad_clip_norm = grad_clip_norm
         self.save_dir = Path(save_dir)
@@ -85,6 +92,33 @@ class Trainer:
             else:
                 out[k] = v
         return out
+
+    def update_aux_loss_weight(self, epoch: int):
+        """
+        根据 epoch 动态更新辅助损失权重
+        支持：
+        - constant
+        - cosine_decay
+        """
+        if self.total_epochs <= 1:
+            self.aux_loss_weight = self.aux_loss_weight_end
+            return
+
+        progress = epoch / (self.total_epochs - 1)
+
+        if self.aux_weight_schedule == "constant":
+            self.aux_loss_weight = self.aux_loss_weight_init
+
+        elif self.aux_weight_schedule == "cosine_decay":
+            import math
+            factor = 0.5 * (1.0 + math.cos(math.pi * progress))
+            self.aux_loss_weight = (
+                    self.aux_loss_weight_end
+                    + (self.aux_loss_weight_init - self.aux_loss_weight_end) * factor
+            )
+
+        else:
+            raise ValueError(f"Unsupported aux_weight_schedule: {self.aux_weight_schedule}")
 
     def compute_losses(self, outputs: Dict, batch: Dict) -> Dict[str, torch.Tensor]:
         if "logits" not in outputs:

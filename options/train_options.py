@@ -16,6 +16,8 @@ class TrainOptions(BaseOptions):
         parser.add_argument("--grad_clip_norm", type=float, default=1.0, help="梯度裁剪的最大L2范数。当梯度的范数超过该值时，会将其缩放到此阈值，防止梯度爆炸")
         parser.add_argument("--log_interval", type=int, default=20, help="每训练多少次打印一次日志")
         parser.add_argument("--save_epoch_freq", type=int, default=1, help="每隔多少个训练轮次保留一个检查点")
+        parser.add_argument("--aux_loss_weight_end",type=float,default=0.05,help="辅助二分类损失权重在训练结束时的目标值")
+        parser.add_argument("--aux_weight_schedule",type=str,default="cosine_decay",choices=["constant", "cosine_decay"],help="辅助损失权重调度方式")
 
         # ===== 训练阶段图像处理配置参数 =====
         parser.add_argument("--blur_prob", type=float, default=0.1, help="对输入图像应用高斯模糊增强的概率")

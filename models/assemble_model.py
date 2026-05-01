@@ -5,7 +5,7 @@ from .orign_CLIP_model.feature_extract import FeatureExtractor
 from .branches.local_branch import LocalPatchBranch
 from .heads.distinct_head import ClassifierHead
 from .fusion.fusion import FeatureFusion
-from .global_adapter import GlobalAdapter
+from models.branches.global_branch import GlobalAdapter
 
 
 class CLIPFDModel(nn.Module):

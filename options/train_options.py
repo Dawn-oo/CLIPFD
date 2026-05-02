@@ -6,7 +6,7 @@ class TrainOptions(BaseOptions):
         parser = BaseOptions.initialize(self, parser)
 
         # ===== 训练参数配置 =====
-        parser.add_argument("--epochs", type=int, default=12, help="总训练轮次，默认15轮")
+        parser.add_argument("--epochs", type=int, default=12, help="总训练轮次，默认12轮")
         parser.add_argument("--lr", type=float, default=1e-4, help="学习率")
         parser.add_argument("--weight_decay", type=float, default=1e-4, help="权重衰减系数，L2正则化")
         parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "sgd"])

@@ -336,29 +336,32 @@ def main():
     best_metric_value = None
 
     for epoch in range(start_epoch, epochs):
-        print(f"\n{'=' * 30} Epoch {epoch + 1}/{epochs} {'=' * 30}")
+        epoch_num = epoch + 1
+        print(f"\n{'=' * 30} Epoch {epoch_num}/{epochs} {'=' * 30}")
 
         trainer.update_aux_loss_weight(epoch)
-        print(f"[辅助二分类损失参数权重] 训练批次={epoch + 1}, 二分类辅助损失权重 = {trainer.aux_loss_weight:.6f}")
+        print(f"[辅助二分类损失参数权重] 训练周期={epoch_num}, 二分类辅助损失权重 = {trainer.aux_loss_weight:.6f}")
 
         current_lr = trainer.update_learning_rate(epoch)
-        print(f"[学习率参数] epoch={epoch + 1}, lr={current_lr:.8f}")
+        print(f"[学习率参数] epoch={epoch_num}, lr={current_lr:.8f}")
 
         train_loop_metrics = trainer.train_one_epoch(train_loader,epoch=epoch,log_interval=opt_get(opt, "log_interval", 20))
         print_metrics("[TrainLoop]", train_loop_metrics)
-        log_metrics(train_writer, "train_loop", train_loop_metrics, epoch)
+        log_metrics(train_writer, "train_loop", train_loop_metrics, epoch_num)
 
+        print("训练集评估中...")
         train_metrics, train_details = trainer.evaluate(train_eval_loader,epoch=epoch,return_details=True)
         print_metrics("[TrainEval]", train_metrics)
-        log_metrics(train_writer, "train_eval", train_metrics, epoch)
+        log_metrics(train_writer, "train_eval", train_metrics, epoch_num)
 
+        print("验证集评估中...")
         val_metrics, val_details = trainer.evaluate(val_loader,epoch=epoch,return_details=True,)
         print_metrics("[Val]", val_metrics)
-        log_metrics(val_writer, "val", val_metrics, epoch)
+        log_metrics(val_writer, "val", val_metrics, epoch_num)
 
         train_report_metrics = reporter.save_epoch_report(
             split="train",
-            epoch=epoch + 1,
+            epoch=epoch_num,
             tri_y_true=train_details["tri_y_true"],
             tri_y_prob=train_details["tri_y_prob"],
             bin_y_true=train_details["bin_y_true"],
@@ -367,7 +370,7 @@ def main():
 
         val_report_metrics = reporter.save_epoch_report(
             split="val",
-            epoch=epoch + 1,
+            epoch=epoch_num,
             tri_y_true=val_details["tri_y_true"],
             tri_y_prob=val_details["tri_y_prob"],
             bin_y_true=val_details["bin_y_true"],
@@ -389,15 +392,15 @@ def main():
             vis_train_metrics["lr"] = train_loop_metrics.get("lr")
 
             visualizer.update(
-                epoch=epoch,
+                epoch=epoch_num,
                 train_metrics=vis_train_metrics,
                 val_metrics=val_metrics,
             )
 
         # 周期保存
-        if (epoch + 1) % save_epoch_freq == 0:
+        if (epoch_num) % save_epoch_freq == 0:
             trainer.save_checkpoint(
-                filename=f"epoch_{epoch + 1}.pth",
+                filename=f"epoch_{epoch_num}.pth",
                 epoch=epoch,
                 extra=make_ckpt_extra(train_loop_metrics, train_metrics, val_metrics)
             )

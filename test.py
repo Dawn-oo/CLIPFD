@@ -55,6 +55,7 @@ def build_model(opt, device: str) -> CLIPFDModel:
         use_global_aux_head=opt_get(opt, "use_global_aux_head", True),
         use_global_adapter=opt_get(opt, "use_global_adapter", True),
         global_adapter_dropout=opt_get(opt, "global_adapter_dropout", 0.1),
+        fusion_mode=opt_get(opt, "fusion_mode", "full")
     )
     return model
 
@@ -214,7 +215,8 @@ def main():
     device = get_device(opt)
     print("测试阶段参数配置加载完成")
 
-    save_dir = Path(opt.checkpoints_dir) / opt.name
+    project_root = Path(__file__).resolve().parent
+    save_dir = project_root / "test_result"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -240,6 +242,7 @@ def main():
 
     # 3. Trainer
     trainer = build_trainer(opt, model, save_dir, device)
+    reporter = EvaluationReporter(save_root=str(save_dir / "eval_reports"),tri_class_names=["真实图", "AI生成", "AI修改"],aux_binary_class_names=("真实图", "AI介入"))
 
     # 4. 加载权重
     ckpt_path = Path(opt.ckpt_path)
@@ -257,11 +260,7 @@ def main():
     print_metrics("[Test]", test_metrics)
 
     # 6. 保存预测结果
-    project_root = Path(__file__).resolve().parent
-    save_dir = project_root / "test_result"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    EvaluationReporter.save_best_report(
+    reporter.save_best_report(
         split="test",
         epoch=1,
         best_metric_name="macro_auc" if "macro_auc" in test_metrics else "loss",
@@ -272,6 +271,7 @@ def main():
         bin_y_true=test_details["bin_y_true"],
         bin_y_prob=test_details["bin_y_prob"],
     )
+
     if opt.save_predictions:
         save_prediction_csv(
             save_path=save_dir / "prediction_csv" / opt.prediction_csv_name,

@@ -31,6 +31,7 @@ class CLIPFDModel(nn.Module):
         gn_groups: int = 8,
         fusion_dropout: float = 0.1,
         use_global_aux_head: bool = True,
+        fusion_mode: str = "full",
         use_global_adapter: bool = True,
         global_adapter_dropout: float = 0.1,
     ):
@@ -51,6 +52,13 @@ class CLIPFDModel(nn.Module):
         :param use_global_aux_head: 是否启用全局辅助头
         """
         super().__init__()
+
+        self.fusion_mode = fusion_mode
+        valid_fusion_modes = {"full", "global_only", "local_only"}
+        if self.fusion_mode not in valid_fusion_modes:
+            raise ValueError(
+                f"fusion_mode must be one of {valid_fusion_modes}, but got {self.fusion_mode}"
+            )
 
         # 1. CLIP 特征提取
         self.feature_extractor = FeatureExtractor(
@@ -123,13 +131,20 @@ class CLIPFDModel(nn.Module):
 
         # 2. 局部分支
         local_out = self.local_branch(patch_tokens)
-        local_feat = local_out["local_feat"]           # [B, 768]
+        local_feat = local_out["local_feat"]  # [B, 768]
 
-        # 3. 融合
-        fused_feat = self.fusion_module(global_feat, local_feat)["fused_feat"]
+        # 3. 根据消融模式选择三分类输入特征
+        if self.fusion_mode == "full":
+            final_feat = self.fusion_module(global_feat, local_feat)["fused_feat"]
+        elif self.fusion_mode == "global_only":
+            final_feat = global_feat
+        elif self.fusion_mode == "local_only":
+            final_feat = local_feat
+        else:
+            raise ValueError(f"Unsupported fusion_mode: {self.fusion_mode}")
 
         # 4. 最终分类
-        logits = self.final_head(fused_feat)["logits"]   # [B, 3]
+        logits = self.final_head(final_feat)["logits"]
 
         outputs = {
             "logits": logits
@@ -142,6 +157,8 @@ class CLIPFDModel(nn.Module):
             outputs["global_feat_raw"] = global_feat_raw
             outputs["global_feat"] = global_feat
             outputs["local_feat"] = local_feat
-            outputs["fused_feat"] = fused_feat
+            outputs["final_feat"] = final_feat
+            if self.fusion_mode == "full":
+                outputs["fused_feat"] = final_feat
 
         return outputs

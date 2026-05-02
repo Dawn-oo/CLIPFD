@@ -303,7 +303,7 @@ class EvaluationReporter:
                 y_pred=y_pred,
                 class_names=class_names,
                 save_path=save_dir / "confusion_matrix.png",
-                title="Best Tri-Head Confusion Matrix",
+                title="三分类任务混淆矩阵",
             )
             np.save(save_dir / "y_true.npy", y_true)
             np.save(save_dir / "y_prob.npy", y_prob)

@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import csv
 
-from torch.utils.tensorboard import SummaryWriter
-
+from utils.eval_report import EvaluationReporter
 from data_deal import build_test_loader
 from models.assemble_model import CLIPFDModel
 from options.test_options import TestOptions
@@ -258,6 +257,21 @@ def main():
     print_metrics("[Test]", test_metrics)
 
     # 6. 保存预测结果
+    project_root = Path(__file__).resolve().parent
+    save_dir = project_root / "test_result"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    EvaluationReporter.save_best_report(
+        split="test",
+        epoch=1,
+        best_metric_name="macro_auc" if "macro_auc" in test_metrics else "loss",
+        best_metric_value=float(test_metrics["macro_auc"]) if "macro_auc" in test_metrics else float(
+            test_metrics["loss"]),
+        tri_y_true=test_details["tri_y_true"],
+        tri_y_prob=test_details["tri_y_prob"],
+        bin_y_true=test_details["bin_y_true"],
+        bin_y_prob=test_details["bin_y_prob"],
+    )
     if opt.save_predictions:
         save_prediction_csv(
             save_path=save_dir / "prediction_csv" / opt.prediction_csv_name,

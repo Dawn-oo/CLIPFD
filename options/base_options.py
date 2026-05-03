@@ -60,7 +60,7 @@ class BaseOptions:
         parser.add_argument("--global_adapter_dropout", type=float, default=0.1, help="全局适配层中的dropout比例")
         parser.add_argument("--fusion_mode",type=str,default="full",choices=["full", "global_only", "local_only"],
                             help="三分类特征来源：full表示全局-局部融合，global_only表示仅全局特征，local_only表示仅局部特征")
-
+        parser.add_argument("--disable_global_aux_head",action="store_false",dest="use_global_aux_head",help="关闭全局辅助二分类头")
         self.initialized = True
         return parser
 
